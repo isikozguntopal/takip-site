@@ -31,6 +31,7 @@ let root;
 export async function startUi(el) {
   root = el;
   root.addEventListener('click', onClick);
+  root.addEventListener('input', onInput);
   root.addEventListener('change', onChange);
   root.addEventListener('submit', onSubmit);
   root.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -434,6 +435,20 @@ function onTouchEnd(e) {
   if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
   state.month = shiftMonth(state.month, dx < 0 ? 1 : -1);
   render();
+}
+
+// Typing digits fills in the colon: 0900 shows as 09:00 while the user types.
+function formatTyping(value, deleting) {
+  const digits = value.replace(/\D/g, '').slice(0, 4);
+  // While deleting, a lone two-digit hour keeps no colon, so the user can still erase it.
+  if (digits.length <= 2) return digits.length === 2 && !deleting ? `${digits}:` : digits;
+  if (digits.length === 3) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function onInput(e) {
+  if (e.target.dataset.field !== 'time' && e.target.dataset.field !== 'rsTime') return;
+  e.target.value = formatTyping(e.target.value, e.inputType?.startsWith('delete'));
 }
 
 async function onChange(e) {
