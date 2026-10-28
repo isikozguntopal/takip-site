@@ -13,6 +13,8 @@ function fromKey(key) {
 export function expandSeries(series, fromDate, toDate) {
   const last = series.endDate && series.endDate < toDate ? series.endDate : toDate;
   const first = series.startDate > fromDate ? series.startDate : fromDate;
+  // A day picked without a time yet is kept, but makes no sessions until the time is entered.
+  if (!series.time) return [];
   const [hour, minute] = series.time.split(':').map(Number);
   const out = [];
 
