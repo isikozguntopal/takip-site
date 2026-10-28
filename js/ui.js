@@ -7,15 +7,15 @@ const DAY_MS = 86400000;
 const HORIZON_DAYS = 56;
 const TABS = [
   ['home', 'Ana'],
-  ['clients', 'Danışanlar'],
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
   ['summary', 'Özet'],
 ];
-// Sunday is 0 in Date.getDay(), so the list starts on Monday and ends with Sunday.
+// Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
+const NEW_CLIENT = '__new';
 
-const state = { tab: 'home', clients: [], sessions: [], series: [], notice: '' };
+const state = { tab: 'home', clients: [], sessions: [], series: [], programClientId: '', notice: '' };
 let root;
 
 export async function startUi(el) {
@@ -30,6 +30,7 @@ async function reload() {
   [state.clients, state.sessions, state.series] = await Promise.all(
     ['clients', 'sessions', 'series'].map(getAll),
   );
+  if (!state.programClientId) state.programClientId = state.clients[0]?.id ?? NEW_CLIENT;
   await generateSessions();
   render();
 }
@@ -59,7 +60,6 @@ function render() {
 
 function screen() {
   switch (state.tab) {
-    case 'clients': return clientsScreen();
     case 'program': return programScreen();
     case 'sessions': return sessionsScreen();
     case 'summary': return summaryScreen();
@@ -111,54 +111,49 @@ function homeScreen() {
       </article>`).join('') || '<p class="empty">Yaklaşan seans yok.</p>'}`;
 }
 
-function clientsScreen() {
-  const rows = state.clients.map((c) => `
-    <form class="card" data-form="client" data-id="${esc(c.id)}">
-      <label>Ad <input name="name" value="${esc(c.name)}" required></label>
-      <button type="submit">Kaydet</button>
-    </form>`).join('');
+// The client picker also adds new clients. A new client starts with every field empty.
+function programScreen() {
+  const selected = state.programClientId;
+  const options = state.clients
+    .map((c) => `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`)
+    .join('');
+  const client = state.clients.find((c) => c.id === selected);
   return `
-    <h2>Danışanlar</h2>
-    <form class="card" data-form="newClient">
-      <label>Ad <input name="name" required></label>
-      <button type="submit">Danışan ekle</button>
-    </form>
-    ${rows || '<p class="empty">Henüz danışan yok.</p>'}`;
+    <h2>Program</h2>
+    <label class="card">Danışan
+      <select data-field="pick">
+        ${options}
+        <option value="${NEW_CLIENT}" ${selected === NEW_CLIENT ? 'selected' : ''}>+ Yeni danışan</option>
+      </select>
+    </label>
+    ${selected === NEW_CLIENT
+      ? `<form class="card" data-form="newClient">
+           <label>Yeni danışanın adı <input name="name" required></label>
+           <button type="submit">Danışanı ekle</button>
+         </form>`
+      : ''}
+    ${client ? programCard(client) : ''}
+    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
 }
 
-// One card per client. A weekday with a fee is a day the client comes; an empty weekday is a day off.
-function programScreen() {
-  if (!state.clients.length) {
-    return '<h2>Program</h2><p class="empty">Önce Danışanlar sekmesinden danışan ekleyin.</p>';
-  }
-  const todayKey = toKey(new Date());
-  const cards = state.clients.map((c) => {
-    const active = activeSeriesOf(c.id);
-    const time = active[0]?.time ?? '';
-    const duration = active[0]?.durationMin ?? 50;
-    const feeFor = (w) => active.find((s) => s.weekdays[0] === w)?.fee ?? '';
-    return `
-      <fieldset class="card program">
-        <legend><strong>${esc(c.name)}</strong></legend>
-        <div class="grid2">
-          <label>Saat <input type="time" name="time-${esc(c.id)}" value="${esc(time)}"></label>
-          <label>Süre (dk) <input type="number" min="5" step="5" name="duration-${esc(c.id)}" value="${esc(duration)}"></label>
-        </div>
-        <p class="hint">Gelen günlerin ücretini yazın. Gelmediği günü boş bırakın.</p>
-        <div class="grid-days">
-          ${WEEKDAYS.map(([w, l]) => `
-            <label>${l} <input type="number" min="0" step="1" name="fee-${esc(c.id)}-${w}" value="${esc(feeFor(w))}" placeholder="—"></label>`).join('')}
-        </div>
-      </fieldset>`;
-  }).join('');
+function programCard(client) {
+  const byDay = new Map(activeSeriesOf(client.id).map((s) => [s.weekdays[0], s]));
+  const strip = WEEKDAYS.map(([w, l]) => `
+    <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${byDay.has(w)}" class="${byDay.has(w) ? 'active' : ''}">${l}</button>`).join('');
+  const fees = WEEKDAYS.filter(([w]) => byDay.has(w)).map(([w, l]) => `
+    <label>${l} ücreti (₺) <input type="number" min="0" step="1" data-field="fee" data-w="${w}" value="${esc(byDay.get(w).fee ?? '')}"></label>`).join('');
   return `
-    <h2>Haftalık program</h2>
-    <form data-form="program">
-      <label class="card">Başlangıç tarihi <input type="date" name="startDate" value="${todayKey}" required></label>
-      ${cards}
-      <button type="submit" class="sync">Programı kaydet</button>
-    </form>
-    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
+    <section class="card program" data-client="${esc(client.id)}">
+      <h3>${esc(client.name)}</h3>
+      <label>Başlangıç tarihi <input type="date" data-field="startDate" value="${esc(client.startDate ?? toKey(new Date()))}"></label>
+      <div class="grid2">
+        <label>Saat <input type="time" data-field="time" value="${esc(client.time ?? '')}"></label>
+        <label>Süre (dk) <input type="number" min="5" step="5" data-field="duration" value="${esc(client.durationMin ?? 50)}"></label>
+      </div>
+      <p class="hint">Gelen günlere dokunun. Her değişiklik otomatik kaydedilir.</p>
+      <div class="week">${strip}</div>
+      ${fees}
+    </section>`;
 }
 
 function sessionsScreen() {
@@ -182,8 +177,7 @@ function sessionsScreen() {
     .join('');
   return `
     <h2>Seanslar</h2>
-    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
-    ${items || '<p class="empty">Henüz seans yok. Program sekmesinden haftalık programı kaydedin.</p>'}`;
+    ${items || '<p class="empty">Henüz seans yok. Program sekmesinden danışanın haftalık programını kaydedin.</p>'}`;
 }
 
 function summaryScreen() {
@@ -201,8 +195,7 @@ function summaryScreen() {
       <p>Alınan <strong>${money(t.overall.paid)}</strong></p>
       <p>Bekleyen <strong>${money(t.overall.outstanding)}</strong></p>
     </section>
-    ${perClient || '<p class="empty">Henüz veri yok.</p>'}
-  `;
+    ${perClient || '<p class="empty">Henüz veri yok.</p>'}`;
 }
 
 // Stops a client's weekly series from today on. Completed, cancelled and paid sessions are kept.
@@ -221,44 +214,39 @@ async function cancelActiveSeries(clientId) {
   }
 }
 
-async function saveProgram(form) {
-  const data = new FormData(form);
-  const startDate = data.get('startDate');
+// Every program change goes through here: the client's settings and days are rewritten in one step.
+// A day with an empty fee is kept with no fee, and its sessions are billed at 0 until a fee is entered.
+async function saveProgram(clientId, { settings = {}, days }) {
+  const client = state.clients.find((c) => c.id === clientId);
+  const current = activeSeriesOf(clientId).map((s) => ({ w: s.weekdays[0], fee: s.fee }));
+  const next = { startDate: client.startDate ?? toKey(new Date()), time: client.time ?? '', durationMin: client.durationMin ?? 50, ...settings };
+  const nextDays = days ?? current;
 
-  // Validate everything before touching stored data, so a bad row leaves the old program in place.
-  const plan = [];
-  for (const c of state.clients) {
-    const time = data.get(`time-${c.id}`);
-    const durationMin = Math.max(5, Number(data.get(`duration-${c.id}`)) || 50);
-    const days = WEEKDAYS
-      .map(([w]) => ({ w, fee: data.get(`fee-${c.id}-${w}`) }))
-      .filter((d) => d.fee !== null && d.fee !== '');
-    if (days.length && !time) {
-      state.notice = `${c.name} için saat girin.`;
-      return render();
-    }
-    if (days.length) plan.push({ client: c, time, durationMin, days });
+  if (nextDays.length && !next.time) {
+    state.notice = 'Önce saat girin.';
+    return render();
   }
 
-  for (const c of state.clients) {
-    await cancelActiveSeries(c.id);
+  await put('clients', { ...client, ...next });
+  await cancelActiveSeries(clientId);
+  for (const d of nextDays) {
+    await put('series', {
+      id: crypto.randomUUID(),
+      clientId,
+      startDate: next.startDate,
+      time: next.time,
+      durationMin: next.durationMin,
+      weekdays: [d.w],
+      fee: d.fee === '' || d.fee == null ? null : Math.max(0, Number(d.fee) || 0),
+      endDate: null,
+    });
   }
-  for (const { client, time, durationMin, days } of plan) {
-    for (const d of days) {
-      await put('series', {
-        id: crypto.randomUUID(),
-        clientId: client.id,
-        startDate,
-        time,
-        durationMin,
-        weekdays: [d.w],
-        fee: Math.max(0, Number(d.fee) || 0),
-        endDate: null,
-      });
-    }
-  }
-  state.notice = 'Program kaydedildi.';
+  state.notice = '';
   return reload();
+}
+
+function currentDays(clientId) {
+  return activeSeriesOf(clientId).map((s) => ({ w: s.weekdays[0], fee: s.fee }));
 }
 
 async function setStatus(id, value) {
@@ -284,6 +272,16 @@ async function onClick(e) {
     return render();
   }
 
+  const toggle = e.target.closest('[data-action="toggle-day"]');
+  if (toggle) {
+    const clientId = toggle.closest('[data-client]').dataset.client;
+    const w = Number(toggle.dataset.w);
+    const days = currentDays(clientId);
+    const on = days.some((d) => d.w === w);
+    const next = on ? days.filter((d) => d.w !== w) : [...days, { w, fee: null }];
+    return saveProgram(clientId, { days: next });
+  }
+
   const card = e.target.closest('[data-session]');
   const action = e.target.closest('[data-action]');
   if (card && action?.dataset.action === 'status') return setStatus(card.dataset.session, action.dataset.value);
@@ -291,7 +289,31 @@ async function onClick(e) {
 }
 
 async function onChange(e) {
-  if (e.target.dataset.field === 'fee') {
+  const field = e.target.dataset.field;
+
+  if (field === 'pick') {
+    state.programClientId = e.target.value;
+    state.notice = '';
+    return render();
+  }
+
+  if (field === 'fee' && e.target.closest('[data-client]')) {
+    const clientId = e.target.closest('[data-client]').dataset.client;
+    const w = Number(e.target.dataset.w);
+    const value = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+    const days = currentDays(clientId).map((d) => (d.w === w ? { ...d, fee: value } : d));
+    return saveProgram(clientId, { days });
+  }
+
+  if (['startDate', 'time', 'duration'].includes(field) && e.target.closest('[data-client]')) {
+    const clientId = e.target.closest('[data-client]').dataset.client;
+    const settings = field === 'duration'
+      ? { durationMin: Math.max(5, Number(e.target.value) || 50) }
+      : { [field]: e.target.value };
+    return saveProgram(clientId, { settings });
+  }
+
+  if (field === 'fee' && e.target.closest('[data-session]')) {
     const card = e.target.closest('[data-session]');
     const session = state.sessions.find((s) => s.id === card.dataset.session);
     await put('sessions', { ...session, fee: Math.max(0, Number(e.target.value) || 0) });
@@ -302,17 +324,12 @@ async function onChange(e) {
 async function onSubmit(e) {
   e.preventDefault();
   const form = e.target;
-  const kind = form.dataset.form;
-  if (kind === 'program') return saveProgram(form);
+  if (form.dataset.form !== 'newClient') return;
 
-  const data = new FormData(form);
-  const name = String(data.get('name') ?? '').trim();
+  const name = String(new FormData(form).get('name') ?? '').trim();
   if (!name) return;
-
-  if (kind === 'newClient') {
-    await put('clients', { id: crypto.randomUUID(), name });
-  } else if (kind === 'client') {
-    await put('clients', { id: form.dataset.id, name });
-  }
+  const id = crypto.randomUUID();
+  await put('clients', { id, name, startDate: toKey(new Date()), time: '', durationMin: 50 });
+  state.programClientId = id;
   return reload();
 }
