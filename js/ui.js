@@ -1,9 +1,6 @@
-import { CONFIG } from '../config.js';
 import { getAll, put, replaceAll } from './db.js';
 import { computeTotals } from './totals.js';
-import { syncEvents } from './calendarSync.js';
 import { buildBackup, parseBackup } from './backup.js';
-import { signIn, listCalendars, listEvents } from './google.js';
 import { motivation, surprise } from './messages.js';
 
 const DAY_MS = 86400000;
@@ -144,7 +141,6 @@ function sessionsScreen() {
            <button type="submit">Seansı ekle</button>`
         : '<p class="empty">Seans eklemek için önce bir danışan ekleyin.</p>'}
     </form>
-    <button type="button" class="sync" data-action="sync">♥ Takvimden çek</button>
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     ${items || '<p class="empty">Henüz seans yok.</p>'}`;
 }
@@ -205,7 +201,6 @@ async function onClick(e) {
     state.notice = '';
     return render();
   }
-  if (e.target.closest('[data-action="sync"]')) return syncCalendar();
   if (e.target.closest('[data-action="backup"]')) return downloadBackup();
 }
 
@@ -273,32 +268,4 @@ async function onSubmit(e) {
     await put('clients', { id: form.dataset.id, name, fee });
   }
   return reload();
-}
-
-async function syncCalendar() {
-  try {
-    state.notice = 'Takvim okunuyor…';
-    render();
-    const token = await signIn();
-    const calendars = await listCalendars(token);
-    const calendarId = CONFIG.calendarName
-      ? calendars.find((c) => c.summary === CONFIG.calendarName)?.id
-      : 'primary';
-    if (!calendarId) throw new Error(`"${CONFIG.calendarName}" takvimi bulunamadı.`);
-
-    const now = Date.now();
-    const events = await listEvents({
-      token,
-      calendarId,
-      timeMin: new Date(now - 60 * DAY_MS).toISOString(),
-      timeMax: new Date(now + 120 * DAY_MS).toISOString(),
-    });
-    const result = syncEvents({ events, clients: state.clients, sessions: state.sessions });
-    await replaceAll({ clients: state.clients, sessions: result.sessions, payments: state.payments });
-    state.notice = `${result.added} yeni, ${result.updated} güncellendi.`;
-    await reload();
-  } catch (err) {
-    state.notice = `Takvim çekilemedi: ${err.message}`;
-    render();
-  }
 }
