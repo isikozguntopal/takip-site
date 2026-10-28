@@ -167,3 +167,66 @@ fieldset.days label.check { font-size: 0.9rem; }
   -webkit-appearance: none;
   margin: 0;
 }
+
+.cal {
+  display: flex;
+  gap: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.cal-times { width: 34px; flex: none; position: relative; }
+.cal-times .cal-body span {
+  position: absolute;
+  left: 0;
+  font-size: 0.65rem;
+  color: var(--purple-500);
+  transform: translateY(-6px);
+}
+.cal-col { flex: 1 1 0; min-width: 0; }
+.cal-head {
+  height: 24px;
+  font-size: 0.7rem;
+  text-align: center;
+  color: var(--purple-700);
+  line-height: 24px;
+}
+.cal-body {
+  position: relative;
+  border-left: 1px solid #e4d6f5;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 21px, #efe6f9 21px, #efe6f9 22px);
+}
+.slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+}
+.block {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  padding: 2px;
+  font-size: 0.65rem;
+  line-height: 1.1;
+  background: var(--purple-500);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  z-index: 1;
+}
+.block.active { background: var(--heart); }
+.block-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--purple-100);
+  display: grid;
+  gap: 8px;
+}
+.block-panel p { margin: 0; }
+.block-panel button { justify-self: start; }
