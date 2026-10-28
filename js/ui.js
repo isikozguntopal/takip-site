@@ -1,6 +1,5 @@
-import { getAll, put, remove, replaceAll } from './db.js';
+import { getAll, put, remove } from './db.js';
 import { computeTotals } from './totals.js';
-import { buildBackup, parseBackup } from './backup.js';
 import { expandSeries, toKey } from './schedule.js';
 import { motivation, surprise } from './messages.js';
 
@@ -16,7 +15,7 @@ const TABS = [
 // Sunday is 0 in Date.getDay(), so the list starts on Monday and ends with Sunday.
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 
-const state = { tab: 'home', clients: [], sessions: [], series: [], notice: '', backupNotice: '' };
+const state = { tab: 'home', clients: [], sessions: [], series: [], notice: '' };
 let root;
 
 export async function startUi(el) {
@@ -203,37 +202,7 @@ function summaryScreen() {
       <p>Bekleyen <strong>${money(t.overall.outstanding)}</strong></p>
     </section>
     ${perClient || '<p class="empty">Henüz veri yok.</p>'}
-    <section class="card backup">
-      <h3>Yedek</h3>
-      <p>Veriler sadece bu telefonda tutulur. Düzenli olarak yedek alın.</p>
-      <button type="button" data-action="backup">Yedek al</button>
-      <label>Yedekten yükle <input type="file" accept="application/json,.json" data-field="restore"></label>
-      ${state.backupNotice ? `<p class="notice">${esc(state.backupNotice)}</p>` : ''}
-    </section>`;
-}
-
-function downloadBackup() {
-  const backup = buildBackup({ clients: state.clients, sessions: state.sessions, payments: [], series: state.series });
-  const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `takip-yedek-${new Date().toISOString().slice(0, 10)}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-async function restoreBackup(file) {
-  const parsed = parseBackup(await file.text());
-  if (!parsed.ok) {
-    state.backupNotice = parsed.reason;
-    return render();
-  }
-  const { clients, sessions, payments, series } = parsed.data;
-  const ok = confirm(`Mevcut veriler silinip yedekteki ${clients.length} danışan ve ${sessions.length} seans ile değiştirilecek. Devam edilsin mi?`);
-  if (!ok) return;
-  await replaceAll({ clients, sessions, payments, series });
-  state.backupNotice = 'Yedek yüklendi.';
-  return reload();
+  `;
 }
 
 // Stops a client's weekly series from today on. Completed, cancelled and paid sessions are kept.
@@ -314,7 +283,6 @@ async function onClick(e) {
     state.notice = '';
     return render();
   }
-  if (e.target.closest('[data-action="backup"]')) return downloadBackup();
 
   const card = e.target.closest('[data-session]');
   const action = e.target.closest('[data-action]');
@@ -323,11 +291,6 @@ async function onClick(e) {
 }
 
 async function onChange(e) {
-  if (e.target.dataset.field === 'restore') {
-    const file = e.target.files[0];
-    if (file) await restoreBackup(file);
-    return;
-  }
   if (e.target.dataset.field === 'fee') {
     const card = e.target.closest('[data-session]');
     const session = state.sessions.find((s) => s.id === card.dataset.session);
