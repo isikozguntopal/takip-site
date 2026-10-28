@@ -133,9 +133,20 @@ function sessionsScreen() {
     .join('');
   return `
     <h2>Seanslar</h2>
+    <form class="card" data-form="newSession">
+      <h3>Seans ekle</h3>
+      ${state.clients.length
+        ? `<label>Danışan <select name="clientId" required>${state.clients
+            .map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`)
+            .join('')}</select></label>
+           <label>Başlangıç <input type="datetime-local" name="start" required></label>
+           <label>Bitiş <input type="datetime-local" name="end" required></label>
+           <button type="submit">Seansı ekle</button>`
+        : '<p class="empty">Seans eklemek için önce bir danışan ekleyin.</p>'}
+    </form>
     <button type="button" class="sync" data-action="sync">♥ Takvimden çek</button>
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
-    ${items || '<p class="empty">Henüz seans yok. Takvimden çekebilirsiniz.</p>'}`;
+    ${items || '<p class="empty">Henüz seans yok.</p>'}`;
 }
 
 function summaryScreen() {
@@ -233,6 +244,25 @@ async function onSubmit(e) {
   const form = e.target;
   const kind = form.dataset.form;
   const data = new FormData(form);
+
+  if (kind === 'newSession') {
+    const start = new Date(data.get('start'));
+    const end = new Date(data.get('end'));
+    if (!(end > start)) {
+      state.notice = 'Bitiş saati başlangıçtan sonra olmalı.';
+      return render();
+    }
+    await put('sessions', {
+      id: crypto.randomUUID(),
+      clientId: data.get('clientId'),
+      start: start.toISOString(),
+      end: end.toISOString(),
+      status: 'planned',
+    });
+    state.notice = '';
+    return reload();
+  }
+
   const name = String(data.get('name') ?? '').trim();
   if (!name) return;
   const fee = Math.max(0, Number(data.get('fee')) || 0);
