@@ -149,3 +149,21 @@ fieldset.days label.check { font-size: 0.9rem; }
   background: var(--purple-700);
   color: #fff;
 }
+
+.day {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+}
+.day input {
+  padding: 8px 2px;
+  font-size: 0.8rem;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+.day input::-webkit-outer-spin-button,
+.day input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

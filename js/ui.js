@@ -136,23 +136,26 @@ function programScreen() {
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
 }
 
+// Each weekday is a column: tap it to choose the day, then its fee field appears right under it.
 function programCard(client) {
   const byDay = new Map(activeSeriesOf(client.id).map((s) => [s.weekdays[0], s]));
-  const strip = WEEKDAYS.map(([w, l]) => `
-    <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${byDay.has(w)}" class="${byDay.has(w) ? 'active' : ''}">${l}</button>`).join('');
-  const fees = WEEKDAYS.filter(([w]) => byDay.has(w)).map(([w, l]) => `
-    <label>${l} ücreti (₺) <input type="number" min="0" step="1" data-field="fee" data-w="${w}" value="${esc(byDay.get(w).fee ?? '')}"></label>`).join('');
+  const days = WEEKDAYS.map(([w, l]) => {
+    const series = byDay.get(w);
+    return `
+      <div class="day">
+        <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${!!series}" class="${series ? 'active' : ''}">${l}</button>
+        ${series ? `<input type="number" min="0" step="1" inputmode="numeric" placeholder="ücret" aria-label="${l} ücreti" data-field="fee" data-w="${w}" value="${esc(series.fee ?? '')}">` : ''}
+      </div>`;
+  }).join('');
   return `
     <section class="card program" data-client="${esc(client.id)}">
       <h3>${esc(client.name)}</h3>
-      <label>Başlangıç tarihi <input type="date" data-field="startDate" value="${esc(client.startDate ?? toKey(new Date()))}"></label>
       <div class="grid2">
         <label>Saat <input type="time" data-field="time" value="${esc(client.time ?? '')}"></label>
         <label>Süre (dk) <input type="number" min="5" step="5" data-field="duration" value="${esc(client.durationMin ?? 50)}"></label>
       </div>
-      <p class="hint">Gelen günlere dokunun. Her değişiklik otomatik kaydedilir.</p>
-      <div class="week">${strip}</div>
-      ${fees}
+      <p class="hint">Gelen günlere dokunun, altına o günün ücretini yazın. Her değişiklik otomatik kaydedilir.</p>
+      <div class="week">${days}</div>
     </section>`;
 }
 
@@ -219,7 +222,8 @@ async function cancelActiveSeries(clientId) {
 async function saveProgram(clientId, { settings = {}, days }) {
   const client = state.clients.find((c) => c.id === clientId);
   const current = activeSeriesOf(clientId).map((s) => ({ w: s.weekdays[0], fee: s.fee }));
-  const next = { startDate: client.startDate ?? toKey(new Date()), time: client.time ?? '', durationMin: client.durationMin ?? 50, ...settings };
+  // A program always starts from the day it is saved.
+  const next = { startDate: toKey(new Date()), time: client.time ?? '', durationMin: client.durationMin ?? 50, ...settings };
   const nextDays = days ?? current;
 
   if (nextDays.length && !next.time) {
@@ -305,7 +309,7 @@ async function onChange(e) {
     return saveProgram(clientId, { days });
   }
 
-  if (['startDate', 'time', 'duration'].includes(field) && e.target.closest('[data-client]')) {
+  if (['time', 'duration'].includes(field) && e.target.closest('[data-client]')) {
     const clientId = e.target.closest('[data-client]').dataset.client;
     const settings = field === 'duration'
       ? { durationMin: Math.max(5, Number(e.target.value) || 50) }
