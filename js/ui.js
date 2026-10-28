@@ -1,5 +1,5 @@
 import { getAll, put, remove } from './db.js';
-import { computeTotals } from './totals.js';
+import { computeSummary, payStateOf, payDateOf, monthOfIso } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
 
 const DAY_MS = 86400000;
@@ -12,8 +12,18 @@ const TABS = [
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 const NEW_CLIENT = '__new';
+const DEFAULT_DURATION = 50;
+const MONTH_RANGE = { back: 6, forward: 12 };
 
-const state = { tab: 'program', clients: [], sessions: [], series: [], programClientId: '', notice: '' };
+const state = {
+  tab: 'program',
+  clients: [],
+  sessions: [],
+  series: [],
+  programClientId: '',
+  month: toKey(new Date()).slice(0, 7),
+  notice: '',
+};
 let root;
 
 export async function startUi(el) {
@@ -54,11 +64,11 @@ function render() {
     <nav class="tabs">${TABS.map(
       ([id, label]) => `<button type="button" data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`,
     ).join('')}</nav>`;
+  root.querySelector('.months .active')?.scrollIntoView({ inline: 'center', block: 'nearest' });
 }
 
 function screen() {
   switch (state.tab) {
-    case 'program': return programScreen();
     case 'sessions': return sessionsScreen();
     case 'summary': return summaryScreen();
     default: return programScreen();
@@ -75,17 +85,72 @@ function clientName(id) {
   return state.clients.find((c) => c.id === id)?.name ?? '—';
 }
 
-function fmtDate(value) {
-  return new Date(value).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' });
-}
-
 function money(n) {
   return `${Number(n).toLocaleString('tr-TR')} ₺`;
+}
+
+function fmtDay(iso) {
+  return new Date(iso).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function activeSeriesOf(clientId) {
   const todayKey = toKey(new Date());
   return state.series.filter((s) => s.clientId === clientId && (!s.endDate || s.endDate >= todayKey));
+}
+
+// One entry per weekday: the time, length and fee of the client's session on that day.
+function currentDays(clientId) {
+  return activeSeriesOf(clientId).map((s) => ({
+    w: s.weekdays[0],
+    time: s.time ?? '',
+    duration: s.durationMin ?? DEFAULT_DURATION,
+    fee: s.fee ?? null,
+  }));
+}
+
+// A newly chosen day takes the value of the nearest earlier day that has one, then the nearest later one.
+function nearestValue(w, days, key) {
+  const order = WEEKDAYS.map(([v]) => v);
+  const pos = order.indexOf(w);
+  const has = days.filter((d) => d[key] != null && d[key] !== '');
+  const earlier = has.filter((d) => order.indexOf(d.w) < pos).sort((a, b) => order.indexOf(b.w) - order.indexOf(a.w));
+  if (earlier.length) return earlier[0][key];
+  const later = has.filter((d) => order.indexOf(d.w) > pos).sort((a, b) => order.indexOf(a.w) - order.indexOf(b.w));
+  return later[0]?.[key] ?? null;
+}
+
+// Accepts 9:30 or 09:30 and returns 09:30, or null when it is not a valid time.
+function normalizeTime(value) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value).trim());
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h > 23 || m > 59) return null;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function monthKeys() {
+  const now = new Date();
+  const keys = [];
+  for (let i = -MONTH_RANGE.back; i <= MONTH_RANGE.forward; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+}
+
+function monthLabel(key) {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' });
+}
+
+// Horizontal month strip: swipe to move between months, tap to choose one.
+function monthStrip() {
+  return `
+    <nav class="months">
+      ${monthKeys().map((k) => `
+        <button type="button" data-action="month" data-month="${k}" class="${k === state.month ? 'active' : ''}">${monthLabel(k)}</button>`).join('')}
+    </nav>`;
 }
 
 // The client picker also adds new clients. A new client starts with every field empty.
@@ -113,68 +178,88 @@ function programScreen() {
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
 }
 
-// A selected day opens its own time and fee, stacked under the day button.
+// Each weekday is a button. A selected day opens its own time, length and fee, stacked under it.
 function programCard(client) {
-  const byDay = new Map(activeSeriesOf(client.id).map((s) => [s.weekdays[0], s]));
+  const byDay = new Map(currentDays(client.id).map((d) => [d.w, d]));
   const days = WEEKDAYS.map(([w, l]) => {
-    const series = byDay.get(w);
+    const day = byDay.get(w);
     return `
       <div class="day">
-        <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${!!series}" class="${series ? 'active' : ''}">${l}</button>
-        ${series ? `
-          <input type="time" aria-label="${l} saati" data-field="time" data-w="${w}" value="${esc(series.time ?? '')}">
-          <input type="number" min="0" step="1" inputmode="numeric" placeholder="ücret" aria-label="${l} ücreti" data-field="fee" data-w="${w}" value="${esc(series.fee ?? '')}">` : ''}
+        <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${!!day}" class="${day ? 'active' : ''}">${l}</button>
+        ${day ? `
+          <input type="text" inputmode="numeric" placeholder="09:00" maxlength="5" aria-label="${l} saati" data-field="time" data-w="${w}" value="${esc(day.time)}">
+          <input type="number" min="5" step="5" inputmode="numeric" aria-label="${l} süresi (dk)" data-field="duration" data-w="${w}" value="${esc(day.duration)}">
+          <input type="number" min="0" step="1" inputmode="numeric" placeholder="ücret" aria-label="${l} ücreti" data-field="fee" data-w="${w}" value="${esc(day.fee ?? '')}">` : ''}
       </div>`;
   }).join('');
   return `
     <section class="card program" data-client="${esc(client.id)}">
       <h3>${esc(client.name)}</h3>
-      <label>Süre (dk) <input type="number" min="5" step="5" data-field="duration" value="${esc(client.durationMin ?? 50)}"></label>
-      <p class="hint">Gelen günlere dokunun. Seçilen günün altına saati ve ücreti yazın. Her değişiklik otomatik kaydedilir.</p>
+      <label>Oda payı (%) <input type="number" min="0" max="100" step="1" inputmode="numeric" data-field="pct" value="${esc(client.roomPct ?? '')}"></label>
+      <p class="hint">Gelen günlere dokunun. Seçilen günün altına saati, süreyi ve ücreti yazın. Her değişiklik otomatik kaydedilir.</p>
       <div class="week">${days}</div>
     </section>`;
 }
 
 function sessionsScreen() {
-  const items = [...state.sessions]
-    .sort((a, b) => a.start.localeCompare(b.start))
-    .map((s) => {
-      const done = s.status === 'done';
-      const cancelled = s.status === 'cancelled';
-      return `
-        <article class="card session" data-session="${esc(s.id)}">
-          <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtDate(s.start))}</span></div>
-          <label>Ücret (₺) <input type="number" min="0" step="1" data-field="fee" value="${esc(s.fee ?? 0)}"></label>
-          <div class="status-buttons">
-            <button type="button" data-action="status" data-value="done" aria-pressed="${done}" class="${done ? 'active' : ''}">Gerçekleşti</button>
-            <button type="button" data-action="status" data-value="cancelled" aria-pressed="${cancelled}" class="${cancelled ? 'active' : ''}">İptal</button>
-            <button type="button" data-action="paid" aria-pressed="${!!s.paid}" class="${s.paid ? 'active' : ''}">Ödendi</button>
-          </div>
-          ${s.paid && s.paidOn ? `<p class="paid-on">Ödeme tarihi: ${esc(new Date(s.paidOn).toLocaleDateString('tr-TR'))}</p>` : ''}
-        </article>`;
-    })
-    .join('');
+  const inMonth = [...state.sessions]
+    .filter((s) => monthOfIso(s.start) === state.month)
+    .sort((a, b) => a.start.localeCompare(b.start));
+  const items = inMonth.map((s) => {
+    const status = s.status;
+    const pay = payStateOf(s);
+    const date = payDateOf(s);
+    const payControls = status === 'done'
+      ? `<div class="pay">
+           <div class="status-buttons">
+             <button type="button" data-action="pay-state" data-value="due" aria-pressed="${pay === 'due'}" class="${pay === 'due' ? 'active' : ''}">Ödenmedi</button>
+             <button type="button" data-action="pay-state" data-value="paid" aria-pressed="${pay === 'paid'}" class="${pay === 'paid' ? 'active' : ''}">Ödendi</button>
+           </div>
+           ${pay === 'due' || pay === 'paid'
+             ? `<label>${pay === 'paid' ? 'Ödeme tarihi' : 'Ödenecek tarih (isteğe bağlı)'} <input type="date" data-field="payDate" value="${esc(date)}"></label>`
+             : ''}
+         </div>`
+      : '';
+    return `
+      <article class="card session ${status === 'cancelled' ? 'cancelled' : ''}" data-session="${esc(s.id)}">
+        <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtDay(s.start))}</span></div>
+        ${status === 'cancelled' ? '<p class="cancel-mark">✕ İptal</p>' : ''}
+        <label>Ücret (₺) <input type="number" min="0" step="1" inputmode="numeric" data-field="fee" value="${esc(s.fee ?? 0)}"></label>
+        <div class="status-buttons">
+          <button type="button" data-action="status" data-value="done" aria-pressed="${status === 'done'}" class="ok ${status === 'done' ? 'active' : ''}">✓ Gerçekleşti</button>
+          <button type="button" data-action="status" data-value="cancelled" aria-pressed="${status === 'cancelled'}" class="bad ${status === 'cancelled' ? 'active' : ''}">✕ İptal</button>
+        </div>
+        ${payControls}
+      </article>`;
+  }).join('');
   return `
     <h2>Seanslar</h2>
-    ${items || '<p class="empty">Henüz seans yok. Program sekmesinden danışanın haftalık programını kaydedin.</p>'}`;
+    ${monthStrip()}
+    ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
 
 function summaryScreen() {
-  const t = computeTotals({ clients: state.clients, sessions: state.sessions });
-  const perClient = t.perClient.map((c) => `
-    <article class="card">
-      <h3>${esc(c.name)}</h3>
-      <p>${c.sessionCount} gerçekleşen seans</p>
-      <p>Faturalanan ${money(c.billed)} · Alınan ${money(c.paid)} · Kalan ${money(c.outstanding)}</p>
-    </article>`).join('');
+  const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month });
+  const perClient = t.perClient
+    .filter((c) => c.sessionCount || c.received || c.outstanding)
+    .map((c) => `
+      <article class="card">
+        <h3>${esc(c.name)} <small>oda %${c.pct}</small></h3>
+        <p>${c.sessionCount} gerçekleşen seans · Faturalanan ${money(c.billed)}</p>
+        <p>Oda payı −${money(c.room)} · <strong>Net ${money(c.net)}</strong></p>
+        <p>Bu ay alınan ${money(c.received)} · Toplam bekleyen ${money(c.outstanding)}</p>
+      </article>`).join('');
   return `
     <h2>Özet</h2>
+    ${monthStrip()}
     <section class="card total">
       <p>Faturalanan <strong>${money(t.overall.billed)}</strong></p>
-      <p>Alınan <strong>${money(t.overall.paid)}</strong></p>
-      <p>Bekleyen <strong>${money(t.overall.outstanding)}</strong></p>
+      <p>Oda payı <strong>−${money(t.overall.room)}</strong></p>
+      <p>Net <strong>${money(t.overall.net)}</strong></p>
+      <p>Bu ay alınan <strong>${money(t.overall.received)}</strong></p>
+      <p>Toplam bekleyen <strong>${money(t.overall.outstanding)}</strong></p>
     </section>
-    ${perClient || '<p class="empty">Henüz veri yok.</p>'}`;
+    ${perClient || '<p class="empty">Bu ayda veri yok.</p>'}`;
 }
 
 // Stops a client's weekly series from today on. Completed, cancelled and paid sessions are kept.
@@ -187,28 +272,24 @@ async function cancelActiveSeries(clientId) {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   for (const s of state.sessions) {
-    if (s.clientId === clientId && s.seriesId && s.status === 'planned' && !s.paid && new Date(s.start) >= startOfToday) {
+    if (s.clientId === clientId && s.seriesId && s.status === 'planned' && new Date(s.start) >= startOfToday) {
       await remove('sessions', s.id);
     }
   }
 }
 
-// Every program change goes through here: the client's settings and days are rewritten in one step.
-// A day with an empty fee is kept with no fee, and its sessions are billed at 0 until a fee is entered.
-async function saveProgram(clientId, { settings = {}, days }) {
-  const client = state.clients.find((c) => c.id === clientId);
-  const next = { startDate: toKey(new Date()), durationMin: client.durationMin ?? 50, ...settings };
-  const nextDays = days ?? currentDays(clientId);
-
-  await put('clients', { ...client, ...next });
+// Every program change goes through here: the client's days are rewritten in one step.
+// A day with no time is kept but makes no sessions until its time is entered.
+async function saveProgram(clientId, days) {
+  const startDate = toKey(new Date());
   await cancelActiveSeries(clientId);
-  for (const d of nextDays) {
+  for (const d of days) {
     await put('series', {
       id: crypto.randomUUID(),
       clientId,
-      startDate: next.startDate,
+      startDate,
       time: d.time || null,
-      durationMin: next.durationMin,
+      durationMin: Math.max(5, Number(d.duration) || DEFAULT_DURATION),
       weekdays: [d.w],
       fee: d.fee === '' || d.fee == null ? null : Math.max(0, Number(d.fee) || 0),
       endDate: null,
@@ -218,30 +299,10 @@ async function saveProgram(clientId, { settings = {}, days }) {
   return reload();
 }
 
-function currentDays(clientId) {
-  return activeSeriesOf(clientId).map((s) => ({ w: s.weekdays[0], time: s.time ?? '', fee: s.fee }));
-}
-
-// A newly chosen day takes the time of the nearest earlier day that has one, then the nearest later one.
-function defaultTimeFor(w, days) {
-  const order = WEEKDAYS.map(([v]) => v);
-  const pos = order.indexOf(w);
-  const timed = days.filter((d) => d.time);
-  const earlier = timed.filter((d) => order.indexOf(d.w) < pos).sort((a, b) => order.indexOf(b.w) - order.indexOf(a.w));
-  if (earlier.length) return earlier[0].time;
-  const later = timed.filter((d) => order.indexOf(d.w) > pos).sort((a, b) => order.indexOf(a.w) - order.indexOf(b.w));
-  return later[0]?.time ?? '';
-}
-
-// A newly chosen day takes the fee of the nearest earlier day that has one, then the nearest later one.
-function defaultFeeFor(w, days) {
-  const order = WEEKDAYS.map(([v]) => v);
-  const pos = order.indexOf(w);
-  const priced = days.filter((d) => d.fee != null);
-  const earlier = priced.filter((d) => order.indexOf(d.w) < pos).sort((a, b) => order.indexOf(b.w) - order.indexOf(a.w));
-  if (earlier.length) return earlier[0].fee;
-  const later = priced.filter((d) => order.indexOf(d.w) > pos).sort((a, b) => order.indexOf(a.w) - order.indexOf(b.w));
-  return later[0]?.fee ?? null;
+async function saveClient(clientId, changes) {
+  const client = state.clients.find((c) => c.id === clientId);
+  await put('clients', { ...client, ...changes });
+  return reload();
 }
 
 async function setStatus(id, value) {
@@ -252,10 +313,13 @@ async function setStatus(id, value) {
   return reload();
 }
 
-async function togglePaid(id) {
+async function setPayState(id, value) {
   const session = state.sessions.find((s) => s.id === id);
-  const paid = !session.paid;
-  await put('sessions', { ...session, paid, paidOn: paid ? toKey(new Date()) : '' });
+  const current = payStateOf(session);
+  const next = current === value ? 'none' : value;
+  // Paying with no date entered counts as paid today; a due date is optional.
+  const payDate = next === 'paid' ? payDateOf(session) || toKey(new Date()) : next === 'due' ? payDateOf(session) : '';
+  await put('sessions', { ...session, payState: next, payDate });
   return reload();
 }
 
@@ -267,20 +331,34 @@ async function onClick(e) {
     return render();
   }
 
-  const toggle = e.target.closest('[data-action="toggle-day"]');
-  if (toggle) {
-    const clientId = toggle.closest('[data-client]').dataset.client;
-    const w = Number(toggle.dataset.w);
-    const days = currentDays(clientId);
-    const on = days.some((d) => d.w === w);
-    const next = on ? days.filter((d) => d.w !== w) : [...days, { w, time: defaultTimeFor(w, days), fee: defaultFeeFor(w, days) }];
-    return saveProgram(clientId, { days: next });
+  const action = e.target.closest('[data-action]');
+  if (!action) return;
+
+  if (action.dataset.action === 'month') {
+    state.month = action.dataset.month;
+    return render();
   }
 
   const card = e.target.closest('[data-session]');
-  const action = e.target.closest('[data-action]');
-  if (card && action?.dataset.action === 'status') return setStatus(card.dataset.session, action.dataset.value);
-  if (card && action?.dataset.action === 'paid') return togglePaid(card.dataset.session);
+  if (card && action.dataset.action === 'status') return setStatus(card.dataset.session, action.dataset.value);
+  if (card && action.dataset.action === 'pay-state') return setPayState(card.dataset.session, action.dataset.value);
+
+  const clientEl = e.target.closest('[data-client]');
+  if (clientEl && action.dataset.action === 'toggle-day') {
+    const clientId = clientEl.dataset.client;
+    const w = Number(action.dataset.w);
+    const days = currentDays(clientId);
+    const on = days.some((d) => d.w === w);
+    const next = on
+      ? days.filter((d) => d.w !== w)
+      : [...days, {
+          w,
+          time: nearestValue(w, days, 'time') ?? '',
+          duration: nearestValue(w, days, 'duration') ?? DEFAULT_DURATION,
+          fee: nearestValue(w, days, 'fee'),
+        }];
+    return saveProgram(clientId, next);
+  }
 }
 
 async function onChange(e) {
@@ -292,30 +370,48 @@ async function onChange(e) {
     return render();
   }
 
-  if (field === 'fee' && e.target.closest('[data-client]')) {
-    const clientId = e.target.closest('[data-client]').dataset.client;
-    const w = Number(e.target.dataset.w);
-    const value = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
-    const days = currentDays(clientId).map((d) => (d.w === w ? { ...d, fee: value } : d));
-    return saveProgram(clientId, { days });
+  const clientEl = e.target.closest('[data-client]');
+  if (clientEl) {
+    const clientId = clientEl.dataset.client;
+
+    if (field === 'pct') {
+      const pct = Math.min(100, Math.max(0, Number(e.target.value) || 0));
+      return saveClient(clientId, { roomPct: pct });
+    }
+
+    if (['time', 'duration', 'fee'].includes(field)) {
+      const w = Number(e.target.dataset.w);
+      const days = currentDays(clientId);
+      let value = e.target.value;
+
+      if (field === 'time') {
+        value = normalizeTime(value);
+        if (value === null) {
+          state.notice = 'Saati 09:30 biçiminde yazın.';
+          return render();
+        }
+      }
+      if (field === 'duration') value = Math.max(5, Number(value) || DEFAULT_DURATION);
+      if (field === 'fee') value = value === '' ? null : Math.max(0, Number(value) || 0);
+
+      const key = field;
+      return saveProgram(clientId, days.map((d) => (d.w === w ? { ...d, [key]: value } : d)));
+    }
+    return;
   }
 
-  if (field === 'time' && e.target.closest('[data-client]')) {
-    const clientId = e.target.closest('[data-client]').dataset.client;
-    const w = Number(e.target.dataset.w);
-    const days = currentDays(clientId).map((d) => (d.w === w ? { ...d, time: e.target.value } : d));
-    return saveProgram(clientId, { days });
-  }
-
-  if (field === 'duration' && e.target.closest('[data-client]')) {
-    const clientId = e.target.closest('[data-client]').dataset.client;
-    return saveProgram(clientId, { settings: { durationMin: Math.max(5, Number(e.target.value) || 50) } });
-  }
-
-  if (field === 'fee' && e.target.closest('[data-session]')) {
-    const card = e.target.closest('[data-session]');
+  const card = e.target.closest('[data-session]');
+  if (card && field === 'fee') {
     const session = state.sessions.find((s) => s.id === card.dataset.session);
     await put('sessions', { ...session, fee: Math.max(0, Number(e.target.value) || 0) });
+    return reload();
+  }
+  if (card && field === 'payDate') {
+    const session = state.sessions.find((s) => s.id === card.dataset.session);
+    const value = e.target.value;
+    // A paid session always keeps a date; clearing it falls back to today.
+    const payDate = payStateOf(session) === 'paid' ? value || toKey(new Date()) : value;
+    await put('sessions', { ...session, payDate });
     return reload();
   }
 }
@@ -328,7 +424,7 @@ async function onSubmit(e) {
   const name = String(new FormData(form).get('name') ?? '').trim();
   if (!name) return;
   const id = crypto.randomUUID();
-  await put('clients', { id, name, startDate: toKey(new Date()), time: '', durationMin: 50 });
+  await put('clients', { id, name });
   state.programClientId = id;
   return reload();
 }

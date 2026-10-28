@@ -181,3 +181,49 @@ fieldset.days label.check { font-size: 0.9rem; }
 .day input[type="time"]::-webkit-datetime-edit {
   padding: 0;
 }
+
+.months {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 0 8px;
+  margin: 0 -16px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.months button {
+  flex: none;
+  background: #fff;
+  color: var(--purple-700);
+  border: 1px solid var(--purple-500);
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.months button.active {
+  background: var(--purple-700);
+  color: #fff;
+}
+.status-buttons button.ok { border-color: #2e7d32; color: #2e7d32; }
+.status-buttons button.ok.active { background: #2e7d32; color: #fff; }
+.status-buttons button.bad { border-color: #c62828; color: #c62828; }
+.status-buttons button.bad.active { background: #c62828; color: #fff; }
+.session.cancelled .row strong {
+  text-decoration: line-through;
+  color: #c62828;
+}
+.session.cancelled { opacity: 0.8; }
+.cancel-mark { color: #c62828; font-weight: 700; margin: 0; }
+.pay { display: grid; gap: 8px; }
+.day input[type="text"] {
+  padding: 6px 1px;
+  font-size: 0.7rem;
+  text-align: center;
+  width: 100%;
+  min-width: 0;
+}
+.day input[type="number"][data-field="duration"] {
+  padding: 6px 1px;
+  font-size: 0.7rem;
+}
