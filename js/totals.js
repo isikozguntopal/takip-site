@@ -1,17 +1,12 @@
-// Only completed sessions are billed; a payment counts as received only when it is marked paid.
-export function computeTotals({ clients, sessions, payments }) {
+// Each completed session is billed at its own fee. A session counts as paid only when it was completed and marked paid.
+export function computeTotals({ clients, sessions }) {
   const perClient = clients.map((client) => {
-    const fee = Number.isFinite(client.fee) ? client.fee : 0;
     const done = sessions.filter((s) => s.clientId === client.id && s.status === 'done');
-    const doneIds = new Set(done.map((s) => s.id));
-    const paid = payments
-      .filter((p) => p.paid && doneIds.has(p.sessionId))
-      .reduce((sum, p) => sum + p.amount, 0);
-    const billed = done.length * fee;
+    const billed = done.reduce((sum, s) => sum + (Number(s.fee) || 0), 0);
+    const paid = done.filter((s) => s.paid).reduce((sum, s) => sum + (Number(s.fee) || 0), 0);
     return {
       clientId: client.id,
       name: client.name,
-      fee,
       sessionCount: done.length,
       billed,
       paid,

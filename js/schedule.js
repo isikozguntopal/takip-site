@@ -28,6 +28,9 @@ export function expandSeries(series, fromDate, toDate) {
       start: start.toISOString(),
       end: end.toISOString(),
       status: 'planned',
+      fee: series.fee ?? 0,
+      paid: false,
+      paidOn: '',
     });
   }
   return out;
