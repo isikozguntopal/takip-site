@@ -227,3 +227,27 @@ fieldset.days label.check { font-size: 0.9rem; }
   padding: 6px 1px;
   font-size: 0.7rem;
 }
+
+.month-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0;
+}
+.month-bar strong {
+  color: var(--purple-700);
+  font-size: 1.1rem;
+  text-align: center;
+}
+.month-bar button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 1.5rem;
+  line-height: 1;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--purple-700);
+  border: 1px solid var(--purple-500);
+}

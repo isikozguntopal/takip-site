@@ -31,6 +31,8 @@ export async function startUi(el) {
   root.addEventListener('click', onClick);
   root.addEventListener('change', onChange);
   root.addEventListener('submit', onSubmit);
+  root.addEventListener('touchstart', onTouchStart, { passive: true });
+  root.addEventListener('touchend', onTouchEnd, { passive: true });
   await reload();
 }
 
@@ -64,7 +66,6 @@ function render() {
     <nav class="tabs">${TABS.map(
       ([id, label]) => `<button type="button" data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`,
     ).join('')}</nav>`;
-  root.querySelector('.months .active')?.scrollIntoView({ inline: 'center', block: 'nearest' });
 }
 
 function screen() {
@@ -129,14 +130,10 @@ function normalizeTime(value) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-function monthKeys() {
-  const now = new Date();
-  const keys = [];
-  for (let i = -MONTH_RANGE.back; i <= MONTH_RANGE.forward; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  }
-  return keys;
+function shiftMonth(key, delta) {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function monthLabel(key) {
@@ -144,13 +141,14 @@ function monthLabel(key) {
   return new Date(y, m - 1, 1).toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' });
 }
 
-// Horizontal month strip: swipe to move between months, tap to choose one.
+// One month at a time: arrows on either side, or swipe left and right on the screen.
 function monthStrip() {
   return `
-    <nav class="months">
-      ${monthKeys().map((k) => `
-        <button type="button" data-action="month" data-month="${k}" class="${k === state.month ? 'active' : ''}">${monthLabel(k)}</button>`).join('')}
-    </nav>`;
+    <div class="month-bar">
+      <button type="button" data-action="prev-month" aria-label="Önceki ay">‹</button>
+      <strong>${monthLabel(state.month)}</strong>
+      <button type="button" data-action="next-month" aria-label="Sonraki ay">›</button>
+    </div>`;
 }
 
 // The client picker also adds new clients. A new client starts with every field empty.
@@ -334,8 +332,12 @@ async function onClick(e) {
   const action = e.target.closest('[data-action]');
   if (!action) return;
 
-  if (action.dataset.action === 'month') {
-    state.month = action.dataset.month;
+  if (action.dataset.action === 'prev-month') {
+    state.month = shiftMonth(state.month, -1);
+    return render();
+  }
+  if (action.dataset.action === 'next-month') {
+    state.month = shiftMonth(state.month, 1);
     return render();
   }
 
@@ -359,6 +361,25 @@ async function onClick(e) {
         }];
     return saveProgram(clientId, next);
   }
+}
+
+// Swiping left goes to the next month, swiping right to the previous one. Only on the screens that have a month.
+let touchStartX = null;
+let touchStartY = null;
+
+function onTouchStart(e) {
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+}
+
+function onTouchEnd(e) {
+  if (touchStartX === null || state.tab === 'program') return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  const dy = e.changedTouches[0].clientY - touchStartY;
+  touchStartX = null;
+  if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
+  state.month = shiftMonth(state.month, dx < 0 ? 1 : -1);
+  render();
 }
 
 async function onChange(e) {
