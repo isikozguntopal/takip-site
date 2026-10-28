@@ -1,9 +1,11 @@
-import { getAll, put, replaceAll } from './db.js';
+import { getAll, put, remove, replaceAll } from './db.js';
 import { computeTotals } from './totals.js';
 import { buildBackup, parseBackup } from './backup.js';
+import { expandSeries, toKey } from './schedule.js';
 import { motivation, surprise } from './messages.js';
 
 const DAY_MS = 86400000;
+const HORIZON_DAYS = 56;
 const TABS = [
   ['home', 'Ana'],
   ['clients', 'Danışanlar'],
@@ -11,8 +13,10 @@ const TABS = [
   ['summary', 'Özet'],
 ];
 const STATUS_LABELS = { planned: 'Planlandı', done: 'Gerçekleşti', cancelled: 'İptal' };
+// Sunday is 0 in Date.getDay(), so the list starts on Monday and ends with Sunday.
+const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 
-const state = { tab: 'home', clients: [], sessions: [], payments: [], notice: '', backupNotice: '' };
+const state = { tab: 'home', clients: [], sessions: [], payments: [], series: [], notice: '', backupNotice: '' };
 let root;
 
 export async function startUi(el) {
@@ -24,10 +28,26 @@ export async function startUi(el) {
 }
 
 async function reload() {
-  [state.clients, state.sessions, state.payments] = await Promise.all(
-    ['clients', 'sessions', 'payments'].map(getAll),
+  [state.clients, state.sessions, state.payments, state.series] = await Promise.all(
+    ['clients', 'sessions', 'payments', 'series'].map(getAll),
   );
+  await generateSessions();
   render();
+}
+
+// Writes the planned sessions of every weekly series up to HORIZON_DAYS ahead. Sessions that already exist are left alone,
+// so statuses and payments recorded on them are never overwritten.
+async function generateSessions() {
+  const horizon = toKey(new Date(Date.now() + HORIZON_DAYS * DAY_MS));
+  const known = new Set(state.sessions.map((s) => s.id));
+  const created = [];
+  for (const series of state.series) {
+    for (const occurrence of expandSeries(series, series.startDate, horizon)) {
+      if (!known.has(occurrence.id)) created.push(occurrence);
+    }
+  }
+  for (const session of created) await put('sessions', session);
+  state.sessions = [...state.sessions, ...created];
 }
 
 function render() {
@@ -67,6 +87,10 @@ function fmtDate(value) {
 
 function money(n) {
   return `${Number(n).toLocaleString('tr-TR')} ₺`;
+}
+
+function dayLabels(weekdays) {
+  return WEEKDAYS.filter(([v]) => weekdays.includes(v)).map(([, l]) => l).join(', ');
 }
 
 function homeScreen() {
@@ -128,19 +152,37 @@ function sessionsScreen() {
         </article>`;
     })
     .join('');
+
+  const todayKey = toKey(new Date());
+  const activeSeries = state.series
+    .filter((s) => !s.endDate || s.endDate >= todayKey)
+    .map((s) => `
+      <article class="card">
+        <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(s.time)} · ${esc(s.durationMin)} dk</span></div>
+        <p>${esc(dayLabels(s.weekdays))} · ${esc(s.startDate)} tarihinden beri, iptal edilene kadar</p>
+        <button type="button" data-action="cancel-series" data-id="${esc(s.id)}">Seriyi iptal et</button>
+      </article>`)
+    .join('');
+
   return `
     <h2>Seanslar</h2>
     <form class="card" data-form="newSession">
-      <h3>Seans ekle</h3>
+      <h3>Tekrarlayan seans ekle</h3>
       ${state.clients.length
         ? `<label>Danışan <select name="clientId" required>${state.clients
             .map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`)
             .join('')}</select></label>
-           <label>Başlangıç <input type="datetime-local" name="start" required></label>
-           <label>Bitiş <input type="datetime-local" name="end" required></label>
-           <button type="submit">Seansı ekle</button>`
+           <label>Başlangıç tarihi <input type="date" name="startDate" required></label>
+           <label>Saat <input type="time" name="time" required></label>
+           <label>Süre (dakika) <input type="number" name="duration" min="5" step="5" value="50" required></label>
+           <fieldset class="days">
+             <legend>Haftanın günleri</legend>
+             ${WEEKDAYS.map(([v, l]) => `<label class="check"><input type="checkbox" name="weekday" value="${v}"> ${l}</label>`).join('')}
+           </fieldset>
+           <button type="submit">Seriyi kaydet</button>`
         : '<p class="empty">Seans eklemek için önce bir danışan ekleyin.</p>'}
     </form>
+    ${activeSeries ? `<h3>Aktif seriler</h3>${activeSeries}` : ''}
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     ${items || '<p class="empty">Henüz seans yok.</p>'}`;
 }
@@ -171,7 +213,12 @@ function summaryScreen() {
 }
 
 function downloadBackup() {
-  const backup = buildBackup({ clients: state.clients, sessions: state.sessions, payments: state.payments });
+  const backup = buildBackup({
+    clients: state.clients,
+    sessions: state.sessions,
+    payments: state.payments,
+    series: state.series,
+  });
   const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
@@ -186,11 +233,32 @@ async function restoreBackup(file) {
     state.backupNotice = parsed.reason;
     return render();
   }
-  const { clients, sessions, payments } = parsed.data;
+  const { clients, sessions, payments, series } = parsed.data;
   const ok = confirm(`Mevcut veriler silinip yedekteki ${clients.length} danışan ve ${sessions.length} seans ile değiştirilecek. Devam edilsin mi?`);
   if (!ok) return;
-  await replaceAll({ clients, sessions, payments });
+  await replaceAll({ clients, sessions, payments, series });
   state.backupNotice = 'Yedek yüklendi.';
+  return reload();
+}
+
+async function cancelSeries(id) {
+  const series = state.series.find((s) => s.id === id);
+  if (!series) return;
+  const ok = confirm('Bu seri iptal edilsin mi? Geçmiş seanslar korunur, ileri tarihli planlanan seanslar silinir.');
+  if (!ok) return;
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  await put('series', { ...series, endDate: toKey(yesterday) });
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  for (const s of state.sessions) {
+    if (s.seriesId === id && s.status === 'planned' && new Date(s.start) >= startOfToday) {
+      await remove('sessions', s.id);
+    }
+  }
+  state.notice = 'Seri iptal edildi.';
   return reload();
 }
 
@@ -202,6 +270,8 @@ async function onClick(e) {
     return render();
   }
   if (e.target.closest('[data-action="backup"]')) return downloadBackup();
+  const cancel = e.target.closest('[data-action="cancel-series"]');
+  if (cancel) return cancelSeries(cancel.dataset.id);
 }
 
 async function onChange(e) {
@@ -241,18 +311,19 @@ async function onSubmit(e) {
   const data = new FormData(form);
 
   if (kind === 'newSession') {
-    const start = new Date(data.get('start'));
-    const end = new Date(data.get('end'));
-    if (!(end > start)) {
-      state.notice = 'Bitiş saati başlangıçtan sonra olmalı.';
+    const weekdays = data.getAll('weekday').map(Number);
+    if (!weekdays.length) {
+      state.notice = 'En az bir gün seçin.';
       return render();
     }
-    await put('sessions', {
+    await put('series', {
       id: crypto.randomUUID(),
       clientId: data.get('clientId'),
-      start: start.toISOString(),
-      end: end.toISOString(),
-      status: 'planned',
+      startDate: data.get('startDate'),
+      time: data.get('time'),
+      durationMin: Math.max(5, Number(data.get('duration')) || 50),
+      weekdays,
+      endDate: null,
     });
     state.notice = '';
     return reload();

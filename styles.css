@@ -90,3 +90,14 @@ button.sync { width: 100%; background: var(--heart); margin: 8px 0; }
   font-size: 0.85rem;
 }
 .tabs button.active { background: var(--purple-700); color: #fff; }
+
+fieldset.days {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+fieldset.days legend { font-size: 0.9rem; margin-bottom: 4px; }
+fieldset.days label.check { font-size: 0.9rem; }

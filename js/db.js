@@ -1,7 +1,7 @@
 // Everything is stored in this browser's IndexedDB. Nothing leaves the device.
 const DB_NAME = 'seans-takip';
-const DB_VERSION = 1;
-const STORES = ['clients', 'sessions', 'payments'];
+const DB_VERSION = 2;
+const STORES = ['clients', 'sessions', 'payments', 'series'];
 
 let dbPromise = null;
 
@@ -11,7 +11,9 @@ export function openDb() {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         for (const name of STORES) {
-          req.result.createObjectStore(name, { keyPath: 'id' });
+          if (!req.result.objectStoreNames.contains(name)) {
+            req.result.createObjectStore(name, { keyPath: 'id' });
+          }
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -44,9 +46,9 @@ export async function remove(store, id) {
 }
 
 // Replaces all data in one transaction, so a failed import leaves the old data intact.
-export async function replaceAll({ clients, sessions, payments }) {
+export async function replaceAll({ clients, sessions, payments, series = [] }) {
   const db = await openDb();
-  const data = { clients, sessions, payments };
+  const data = { clients, sessions, payments, series };
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORES, 'readwrite');
     tx.oncomplete = () => resolve();
