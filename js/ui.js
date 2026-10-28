@@ -23,6 +23,7 @@ const state = {
   series: [],
   programClientId: '',
   month: toKey(new Date()).slice(0, 7),
+  rescheduleId: '',
   notice: '',
 };
 let root;
@@ -91,8 +92,19 @@ function money(n) {
   return `${Number(n).toLocaleString('tr-TR')} ₺`;
 }
 
-function fmtDay(iso) {
-  return new Date(iso).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' });
+function hm(iso) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// "3 Kas 2026 09:00 - 3 Kas 2026 09:50", the end follows from the session length.
+function fmtRange(s) {
+  const day = (iso) => new Date(iso).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
+  return s.end ? `${day(s.start)} ${hm(s.start)} - ${day(s.end)} ${hm(s.end)}` : `${day(s.start)} ${hm(s.start)}`;
+}
+
+function durationMinOf(s) {
+  return s.end ? Math.round((new Date(s.end) - new Date(s.start)) / 60000) : DEFAULT_DURATION;
 }
 
 function activeSeriesOf(clientId) {
@@ -219,15 +231,28 @@ function sessionsScreen() {
              : ''}
          </div>`
       : '';
+    const reschedule = status === 'cancelled'
+      ? (state.rescheduleId === s.id
+          ? `<div class="reschedule">
+               <label>Yeni tarih <input type="date" data-field="rsDate" value="${toKey(new Date(s.start))}"></label>
+               <label>Yeni saat <input type="text" inputmode="numeric" placeholder="09:00" maxlength="5" data-field="rsTime" value="${hm(s.start)}"></label>
+               <div class="status-buttons">
+                 <button type="button" data-action="confirm-reschedule">Planla</button>
+                 <button type="button" data-action="cancel-reschedule">Vazgeç</button>
+               </div>
+             </div>`
+          : `<button type="button" class="wide" data-action="reschedule">Yeniden planla</button>`)
+      : '';
     return `
       <article class="card session ${status === 'cancelled' ? 'cancelled' : ''}" data-session="${esc(s.id)}">
-        <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtDay(s.start))}</span></div>
+        <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtRange(s))}</span></div>
         ${status === 'cancelled' ? '<p class="cancel-mark">✕ İptal</p>' : ''}
         <label>Ücret (₺) <input type="number" min="0" step="1" inputmode="numeric" data-field="fee" value="${esc(s.fee ?? 0)}"></label>
         <div class="status-buttons">
           <button type="button" data-action="status" data-value="done" aria-pressed="${status === 'done'}" class="ok ${status === 'done' ? 'active' : ''}">✓ Gerçekleşti</button>
           <button type="button" data-action="status" data-value="cancelled" aria-pressed="${status === 'cancelled'}" class="bad ${status === 'cancelled' ? 'active' : ''}">✕ İptal</button>
         </div>
+        ${reschedule}
         ${payControls}
       </article>`;
   }).join('');
@@ -237,7 +262,6 @@ function sessionsScreen() {
     ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
 
-// One figure per client and one overall: the net fee of the month, after the room share.
 function summaryScreen() {
   const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month });
   const perClient = t.perClient
@@ -265,7 +289,7 @@ async function cancelActiveSeries(clientId) {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   for (const s of state.sessions) {
-    if (s.clientId === clientId && s.seriesId && s.status === 'planned' && new Date(s.start) >= startOfToday) {
+    if (s.clientId === clientId && s.seriesId && !s.moved && s.status === 'planned' && new Date(s.start) >= startOfToday) {
       await remove('sessions', s.id);
     }
   }
@@ -306,12 +330,37 @@ async function setStatus(id, value) {
   return reload();
 }
 
+// Moves a cancelled session to a new day and time, keeping its length. It becomes planned again and is marked moved,
+// so a later program change does not delete it.
+async function rescheduleSession(card) {
+  const session = state.sessions.find((s) => s.id === card.dataset.session);
+  const date = card.querySelector('[data-field="rsDate"]').value;
+  const time = normalizeTime(card.querySelector('[data-field="rsTime"]').value);
+  if (!date) {
+    state.notice = 'Yeni tarihi seçin.';
+    return render();
+  }
+  if (time === null) {
+    state.notice = 'Saati 09:30 biçiminde yazın.';
+    return render();
+  }
+  const [y, m, d] = date.split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  const start = new Date(y, m - 1, d, hh, mm);
+  const end = new Date(start.getTime() + durationMinOf(session) * 60000);
+  await put('sessions', { ...session, start: start.toISOString(), end: end.toISOString(), status: 'planned', moved: true });
+  state.rescheduleId = '';
+  state.notice = '';
+  state.month = monthOfIso(start.toISOString());
+  return reload();
+}
+
 async function setPayState(id, value) {
   const session = state.sessions.find((s) => s.id === id);
   const current = payStateOf(session);
   const next = current === value ? 'none' : value;
   // Paying with no date entered counts as paid today; a due date is optional.
-  const payDate = next === 'paid' ? payDateOf(session) || toKey(new Date()) : next === 'due' ? payDateOf(session) : '';
+  const payDate = next === 'paid' ? toKey(new Date()) : '';
   await put('sessions', { ...session, payState: next, payDate });
   return reload();
 }
@@ -339,6 +388,16 @@ async function onClick(e) {
   const card = e.target.closest('[data-session]');
   if (card && action.dataset.action === 'status') return setStatus(card.dataset.session, action.dataset.value);
   if (card && action.dataset.action === 'pay-state') return setPayState(card.dataset.session, action.dataset.value);
+
+  if (card && action.dataset.action === 'reschedule') {
+    state.rescheduleId = card.dataset.session;
+    return render();
+  }
+  if (action.dataset.action === 'cancel-reschedule') {
+    state.rescheduleId = '';
+    return render();
+  }
+  if (card && action.dataset.action === 'confirm-reschedule') return rescheduleSession(card);
 
   const clientEl = e.target.closest('[data-client]');
   if (clientEl && action.dataset.action === 'toggle-day') {

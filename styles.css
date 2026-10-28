@@ -251,3 +251,6 @@ fieldset.days label.check { font-size: 0.9rem; }
   color: var(--purple-700);
   border: 1px solid var(--purple-500);
 }
+
+.reschedule { display: grid; gap: 8px; }
+button.wide { width: 100%; background: var(--purple-500); }
