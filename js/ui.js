@@ -3,7 +3,8 @@ import { computeSummary, payStateOf, payDateOf, monthOfIso } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
 
 const DAY_MS = 86400000;
-const HORIZON_DAYS = 56;
+// Sessions are written this far ahead, so any month in the next year shows its sessions.
+const HORIZON_DAYS = 400;
 const TABS = [
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
@@ -236,28 +237,22 @@ function sessionsScreen() {
     ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
 
+// One figure per client and one overall: the net fee of the month, after the room share.
 function summaryScreen() {
   const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month });
   const perClient = t.perClient
-    .filter((c) => c.sessionCount || c.received || c.outstanding)
+    .filter((c) => c.sessionCount)
     .map((c) => `
       <article class="card">
-        <h3>${esc(c.name)} <small>oda %${c.pct}</small></h3>
-        <p>${c.sessionCount} gerçekleşen seans · Faturalanan ${money(c.billed)}</p>
-        <p>Oda payı −${money(c.room)} · <strong>Net ${money(c.net)}</strong></p>
-        <p>Bu ay alınan ${money(c.received)} · Toplam bekleyen ${money(c.outstanding)}</p>
+        <div class="row"><strong>${esc(c.name)}</strong><span>${money(c.net)}</span></div>
       </article>`).join('');
   return `
     <h2>Özet</h2>
     ${monthStrip()}
     <section class="card total">
-      <p>Faturalanan <strong>${money(t.overall.billed)}</strong></p>
-      <p>Oda payı <strong>−${money(t.overall.room)}</strong></p>
-      <p>Net <strong>${money(t.overall.net)}</strong></p>
-      <p>Bu ay alınan <strong>${money(t.overall.received)}</strong></p>
-      <p>Toplam bekleyen <strong>${money(t.overall.outstanding)}</strong></p>
+      <p>Net toplam <strong>${money(t.overall.net)}</strong></p>
     </section>
-    ${perClient || '<p class="empty">Bu ayda veri yok.</p>'}`;
+    ${perClient || '<p class="empty">Bu ayda gerçekleşen seans yok.</p>'}`;
 }
 
 // Stops a client's weekly series from today on. Completed, cancelled and paid sessions are kept.
