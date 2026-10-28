@@ -1,12 +1,10 @@
 import { getAll, put, remove } from './db.js';
 import { computeTotals } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
-import { motivation, surprise } from './messages.js';
 
 const DAY_MS = 86400000;
 const HORIZON_DAYS = 56;
 const TABS = [
-  ['home', 'Ana'],
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
   ['summary', 'Özet'],
@@ -15,7 +13,7 @@ const TABS = [
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 const NEW_CLIENT = '__new';
 
-const state = { tab: 'home', clients: [], sessions: [], series: [], programClientId: '', notice: '' };
+const state = { tab: 'program', clients: [], sessions: [], series: [], programClientId: '', notice: '' };
 let root;
 
 export async function startUi(el) {
@@ -63,7 +61,7 @@ function screen() {
     case 'program': return programScreen();
     case 'sessions': return sessionsScreen();
     case 'summary': return summaryScreen();
-    default: return homeScreen();
+    default: return programScreen();
   }
 }
 
@@ -90,27 +88,6 @@ function activeSeriesOf(clientId) {
   return state.series.filter((s) => s.clientId === clientId && (!s.endDate || s.endDate >= todayKey));
 }
 
-function homeScreen() {
-  const day = Math.floor(Date.now() / DAY_MS);
-  const now = Date.now();
-  const upcoming = state.sessions
-    .filter((s) => s.status === 'planned' && new Date(s.start).getTime() >= now)
-    .sort((a, b) => a.start.localeCompare(b.start))
-    .slice(0, 5);
-  return `
-    <header class="hero">
-      <p class="heart">♥</p>
-      <h1>${esc(motivation(day))}</h1>
-      <p class="note">${esc(surprise(day))}</p>
-    </header>
-    <h2>Yaklaşan seanslar</h2>
-    ${upcoming.map((s) => `
-      <article class="card">
-        <strong>${esc(clientName(s.clientId))}</strong>
-        <span>${esc(fmtDate(s.start))}</span>
-      </article>`).join('') || '<p class="empty">Yaklaşan seans yok.</p>'}`;
-}
-
 // The client picker also adds new clients. A new client starts with every field empty.
 function programScreen() {
   const selected = state.programClientId;
@@ -134,6 +111,17 @@ function programScreen() {
       : ''}
     ${client ? programCard(client) : ''}
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
+}
+
+// A newly chosen day takes the fee of the nearest earlier day in the week that already has one, then the nearest later one.
+function defaultFeeFor(w, days) {
+  const order = WEEKDAYS.map(([v]) => v);
+  const pos = order.indexOf(w);
+  const priced = days.filter((d) => d.fee != null);
+  const earlier = priced.filter((d) => order.indexOf(d.w) < pos).sort((a, b) => order.indexOf(b.w) - order.indexOf(a.w));
+  if (earlier.length) return earlier[0].fee;
+  const later = priced.filter((d) => order.indexOf(d.w) > pos).sort((a, b) => order.indexOf(a.w) - order.indexOf(b.w));
+  return later[0]?.fee ?? null;
 }
 
 // Each weekday is a column: tap it to choose the day, then its fee field appears right under it.
@@ -282,7 +270,7 @@ async function onClick(e) {
     const w = Number(toggle.dataset.w);
     const days = currentDays(clientId);
     const on = days.some((d) => d.w === w);
-    const next = on ? days.filter((d) => d.w !== w) : [...days, { w, fee: null }];
+    const next = on ? days.filter((d) => d.w !== w) : [...days, { w, fee: defaultFeeFor(w, days) }];
     return saveProgram(clientId, { days: next });
   }
 
