@@ -1,0 +1,92 @@
+:root {
+  --purple-900: #3d1a5e;
+  --purple-700: #5b2a86;
+  --purple-500: #8e5bc2;
+  --purple-100: #f3ebfa;
+  --card: #ffffff;
+  --heart: #c2185b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 16px 16px 96px;
+  background: var(--purple-100);
+  color: var(--purple-900);
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+}
+
+h1, h2, h3 { color: var(--purple-700); margin: 12px 0; }
+h1 { font-size: 1.35rem; line-height: 1.4; }
+h2 { font-size: 1.15rem; }
+
+.hero { background: var(--purple-700); color: #fff; border-radius: 20px; padding: 20px; text-align: center; }
+.hero h1 { color: #fff; font-size: 1.2rem; }
+.hero .heart { color: var(--heart); font-size: 2rem; margin: 0; }
+.hero .note { opacity: 0.9; font-style: italic; margin-bottom: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid #e4d6f5;
+  border-left: 5px solid var(--purple-500);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 10px 0;
+  display: grid;
+  gap: 8px;
+}
+.card h3 { margin: 0; }
+.card p { margin: 0; }
+
+.row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+label { display: grid; gap: 4px; font-size: 0.9rem; }
+label.check { display: flex; align-items: center; gap: 6px; }
+input, select {
+  font: inherit;
+  padding: 10px;
+  border: 1px solid #cbb3e6;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--purple-900);
+  width: 100%;
+  min-width: 0;
+}
+.payment { display: grid; gap: 8px; }
+.payment label.check { align-self: end; }
+
+button {
+  font: inherit;
+  background: var(--purple-700);
+  color: #fff;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+button.sync { width: 100%; background: var(--heart); margin: 8px 0; }
+
+.total p { font-size: 1rem; }
+.empty, .notice { color: var(--purple-500); text-align: center; }
+.notice { background: #fff; border-radius: 12px; padding: 8px; }
+
+.tabs {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: #fff;
+  border-top: 1px solid #e4d6f5;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  gap: 6px;
+}
+.tabs button {
+  background: transparent;
+  color: var(--purple-700);
+  padding: 8px 4px;
+  font-size: 0.85rem;
+}
+.tabs button.active { background: var(--purple-700); color: #fff; }
