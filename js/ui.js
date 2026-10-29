@@ -19,7 +19,7 @@ const TABS = [
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 const NEW_CLIENT = '__new';
-const DEFAULT_DURATION = 50;
+const DEFAULT_DURATION = 40;
 const MONTH_RANGE = { back: 6, forward: 12 };
 
 const state = {
@@ -296,12 +296,19 @@ function sessionsScreen() {
 
 function summaryScreen() {
   const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month });
+  // Tapping a client's name opens the breakdown: sessions, what was received, the room share paid, and what is left.
   const perClient = t.perClient
     .filter((c) => c.sessionCount)
     .map((c) => `
-      <article class="card">
-        <div class="row"><strong>${esc(c.name)}</strong><span>${money(c.net)}</span></div>
-      </article>`).join('');
+      <details class="card client-sum">
+        <summary><strong>${esc(c.name)}</strong><span>${money(c.net)}</span></summary>
+        <dl class="sum-detail">
+          <div><dt>Seans</dt><dd>${c.sessionCount}</dd></div>
+          <div><dt>Alınan</dt><dd>${money(c.gross)}</dd></div>
+          <div><dt>Oda payı (%${c.pct})</dt><dd>${money(c.room)}</dd></div>
+          <div class="sum-net"><dt>Kalan</dt><dd>${money(c.net)}</dd></div>
+        </dl>
+      </details>`).join('');
   return `
     <h2>Özet</h2>
     ${monthStrip()}

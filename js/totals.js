@@ -36,10 +36,16 @@ export function computeSummary({ clients, sessions, month }) {
         && payStateOf(s) === 'paid'
         && monthOfDay(payDateOf(s)) === month,
     );
-    const net = received.reduce((sum, s) => sum + (Number(s.fee) || 0) - roomOf(s.fee, pct), 0);
-    return { clientId: client.id, name: client.name, pct, sessionCount: received.length, net };
+    const gross = received.reduce((sum, s) => sum + (Number(s.fee) || 0), 0);
+    const room = received.reduce((sum, s) => sum + roomOf(s.fee, pct), 0);
+    return { clientId: client.id, name: client.name, pct, sessionCount: received.length, gross, room, net: gross - room };
   });
 
-  const overall = { net: perClient.reduce((sum, c) => sum + c.net, 0) };
+  const overall = {
+    sessionCount: perClient.reduce((sum, c) => sum + c.sessionCount, 0),
+    gross: perClient.reduce((sum, c) => sum + c.gross, 0),
+    room: perClient.reduce((sum, c) => sum + c.room, 0),
+    net: perClient.reduce((sum, c) => sum + c.net, 0),
+  };
   return { perClient, overall };
 }

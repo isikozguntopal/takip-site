@@ -286,6 +286,54 @@ button:active { transform: scale(0.96); }
 .total p { font-size: 1.05rem; }
 .total strong { color: var(--purple-700); }
 
+.client-sum summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--purple-700);
+  font-size: 1.05rem;
+  -webkit-tap-highlight-color: transparent;
+}
+.client-sum summary::-webkit-details-marker { display: none; }
+.client-sum summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--purple-500);
+  border-bottom: 2px solid var(--purple-500);
+  transform: rotate(45deg) translateY(-3px);
+  transition: transform 0.3s var(--ease);
+  flex: none;
+}
+.client-sum[open] summary::after { transform: rotate(225deg) translateY(-3px); }
+.client-sum[open] { border-left-color: var(--purple-700); }
+.sum-detail {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+  animation: unfold 0.3s var(--ease) both;
+}
+.sum-detail div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--purple-100);
+  border-radius: 10px;
+}
+.sum-detail dt { color: var(--purple-700); }
+.sum-detail dd { margin: 0; font-weight: 600; color: var(--purple-900); }
+.sum-detail .sum-net { background: var(--purple-700); }
+.sum-detail .sum-net dt, .sum-detail .sum-net dd { color: #fff; }
+
+@keyframes unfold {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
 .reschedule { display: grid; gap: 10px; }
 button.wide { width: 100%; background: var(--purple-500); }
 
