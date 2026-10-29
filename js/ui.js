@@ -1,10 +1,16 @@
 import { getAll, put, remove } from './db.js';
 import { computeSummary, payStateOf, payDateOf, monthOfIso } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
+import { dailyMotivation } from './motivation.js';
 
 const DAY_MS = 86400000;
 // Sessions are written this far ahead, so any month in the next year shows its sessions.
 const HORIZON_DAYS = 400;
+const ICON = {
+  program: '<path d="M3 5h18v16H3zM3 10h18M8 3v4M16 3v4"/>',
+  sessions: '<path d="M4 12l5 5L20 6"/>',
+  summary: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+};
 const TABS = [
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
@@ -27,6 +33,8 @@ const state = {
   notice: '',
 };
 let root;
+// Only the first render of a tab plays the entrance animation, so typing and saving do not replay it.
+let lastTab = null;
 
 export async function startUi(el) {
   root = el;
@@ -64,11 +72,29 @@ async function generateSessions() {
 }
 
 function render() {
+  const enter = lastTab !== state.tab;
+  lastTab = state.tab;
   root.innerHTML = `
-    <section class="screen">${screen()}</section>
+    <section class="screen ${enter ? 'enter' : ''}">
+      ${motto()}
+      ${screen()}
+    </section>
     <nav class="tabs">${TABS.map(
-      ([id, label]) => `<button type="button" data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`,
+      ([id, label]) => `
+        <button type="button" data-tab="${id}" class="${state.tab === id ? 'active' : ''}" aria-current="${state.tab === id}">
+          <svg viewBox="0 0 24 24" aria-hidden="true">${ICON[id]}</svg>
+          <span>${label}</span>
+        </button>`,
     ).join('')}</nav>`;
+}
+
+// The daily sentence, shown at the top of every screen.
+function motto() {
+  return `
+    <aside class="motto">
+      <span class="heart" aria-hidden="true">♥</span>
+      <p>${esc(dailyMotivation())}</p>
+    </aside>`;
 }
 
 function screen() {
@@ -190,18 +216,23 @@ function programScreen() {
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}`;
 }
 
-// Each weekday is a button. A selected day opens its own time, length and fee, stacked under it.
+// Days are listed top to bottom. A selected day opens its time, length and fee in a row under its name.
 function programCard(client) {
   const byDay = new Map(currentDays(client.id).map((d) => [d.w, d]));
   const days = WEEKDAYS.map(([w, l]) => {
     const day = byDay.get(w);
     return `
-      <div class="day">
-        <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${!!day}" class="${day ? 'active' : ''}">${l}</button>
+      <div class="day ${day ? 'on' : ''}">
+        <button type="button" data-action="toggle-day" data-w="${w}" aria-pressed="${!!day}" class="${day ? 'active' : ''}">
+          <span>${l}</span>
+          <span class="day-state">${day ? (day.time || 'saat seç') : 'boş'}</span>
+        </button>
         ${day ? `
-          <input type="text" inputmode="numeric" placeholder="09:00" maxlength="5" aria-label="${l} saati" data-field="time" data-w="${w}" value="${esc(day.time)}">
-          <input type="number" min="5" step="5" inputmode="numeric" aria-label="${l} süresi (dk)" data-field="duration" data-w="${w}" value="${esc(day.duration)}">
-          <input type="number" min="0" step="1" inputmode="numeric" placeholder="ücret" aria-label="${l} ücreti" data-field="fee" data-w="${w}" value="${esc(day.fee ?? '')}">` : ''}
+          <div class="day-fields">
+            <label>Saat <input type="text" inputmode="numeric" placeholder="09:00" maxlength="5" aria-label="${l} saati" data-field="time" data-w="${w}" value="${esc(day.time)}"></label>
+            <label>Süre (dk) <input type="number" min="5" step="5" inputmode="numeric" aria-label="${l} süresi (dk)" data-field="duration" data-w="${w}" value="${esc(day.duration)}"></label>
+            <label>Ücret (₺) <input type="number" min="0" step="1" inputmode="numeric" placeholder="ücret" aria-label="${l} ücreti" data-field="fee" data-w="${w}" value="${esc(day.fee ?? '')}"></label>
+          </div>` : ''}
       </div>`;
   }).join('');
   return `
