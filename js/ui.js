@@ -1,7 +1,8 @@
 import { getAll, put, remove } from './db.js';
-import { computeSummary, payStateOf, payDateOf, monthOfIso } from './totals.js';
+import { computeSummary, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
+import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder } from './reminder.js';
 
 const DAY_MS = 86400000;
 // Sessions are written this far ahead, so any month in the next year shows its sessions.
@@ -10,12 +11,18 @@ const ICON = {
   program: '<path d="M3 5h18v16H3zM3 10h18M8 3v4M16 3v4"/>',
   sessions: '<path d="M4 12l5 5L20 6"/>',
   summary: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  clients: '<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M16 4.5a4 4 0 0 1 0 7M22 21c0-3-2-5-5-5.5"/>',
+  me: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
 };
 const TABS = [
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
   ['summary', 'Özet'],
+  ['clients', 'Danışanlar'],
+  ['me', 'Ben'],
 ];
+// How often the open app checks whether the evening reminder is due.
+const REMINDER_CHECK_MS = 60000;
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
 const WEEKDAYS = [[1, 'Pzt'], [2, 'Sal'], [3, 'Çar'], [4, 'Per'], [5, 'Cum'], [6, 'Cmt'], [0, 'Paz']];
 const NEW_CLIENT = '__new';
@@ -30,6 +37,8 @@ const state = {
   programClientId: '',
   month: toKey(new Date()).slice(0, 7),
   rescheduleId: '',
+  clientId: '',
+  search: '',
   notice: '',
 };
 let root;
@@ -45,6 +54,12 @@ export async function startUi(el) {
   root.addEventListener('touchstart', onTouchStart, { passive: true });
   root.addEventListener('touchend', onTouchEnd, { passive: true });
   await reload();
+  // The reminder is checked on open, every minute while open, and when the app comes back to the front.
+  checkReminder();
+  setInterval(checkReminder, REMINDER_CHECK_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkReminder();
+  });
 }
 
 async function reload() {
@@ -101,6 +116,8 @@ function screen() {
   switch (state.tab) {
     case 'sessions': return sessionsScreen();
     case 'summary': return summaryScreen();
+    case 'clients': return clientsScreen();
+    case 'me': return meScreen();
     default: return programScreen();
   }
 }
@@ -168,12 +185,6 @@ function normalizeTime(value) {
   const m = Number(match[2]);
   if (h > 23 || m > 59) return null;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-function shiftMonth(key, delta) {
-  const [y, m] = key.split('-').map(Number);
-  const d = new Date(y, m - 1 + delta, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function monthLabel(key) {
@@ -315,6 +326,7 @@ function summaryScreen() {
     <section class="card total">
       <p>Net toplam <strong>${money(t.overall.net)}</strong></p>
     </section>
+    ${trendChart()}
     ${perClient || '<p class="empty">Bu ayda gerçekleşen seans yok.</p>'}`;
 }
 
@@ -409,11 +421,27 @@ async function onClick(e) {
   if (tab) {
     state.tab = tab.dataset.tab;
     state.notice = '';
+    state.clientId = '';
     return render();
   }
 
   const action = e.target.closest('[data-action]');
   if (!action) return;
+
+  if (action.dataset.action === 'open-client') {
+    state.clientId = action.dataset.id;
+    return render();
+  }
+  if (action.dataset.action === 'close-client') {
+    state.clientId = '';
+    return render();
+  }
+  if (action.dataset.action === 'pick-month') {
+    state.month = action.dataset.month;
+    return render();
+  }
+  if (action.dataset.action === 'toggle-reminder') return toggleReminder();
+  if (action.dataset.action === 'test-reminder') return testReminder();
 
   if (action.dataset.action === 'prev-month') {
     state.month = shiftMonth(state.month, -1);
@@ -466,7 +494,7 @@ function onTouchStart(e) {
 }
 
 function onTouchEnd(e) {
-  if (touchStartX === null || state.tab === 'program') return;
+  if (touchStartX === null || !['sessions', 'summary'].includes(state.tab)) return;
   const dx = e.changedTouches[0].clientX - touchStartX;
   const dy = e.changedTouches[0].clientY - touchStartY;
   touchStartX = null;
@@ -485,6 +513,13 @@ function formatTyping(value, deleting) {
 }
 
 function onInput(e) {
+  // Search only redraws the list, so the field keeps its focus while typing.
+  if (e.target.dataset.field === 'search') {
+    state.search = e.target.value;
+    const list = root.querySelector('#client-list');
+    if (list) list.innerHTML = clientList();
+    return;
+  }
   if (e.target.dataset.field !== 'time' && e.target.dataset.field !== 'rsTime') return;
   e.target.value = formatTyping(e.target.value, e.inputType?.startsWith('delete'));
 }
@@ -502,6 +537,7 @@ async function onChange(e) {
   if (clientEl) {
     const clientId = clientEl.dataset.client;
 
+    if (field === 'notes') return saveClient(clientId, { notes: e.target.value });
     if (field === 'pct') {
       const pct = Math.min(100, Math.max(0, Number(e.target.value) || 0));
       return saveClient(clientId, { roomPct: pct });
@@ -542,6 +578,199 @@ async function onChange(e) {
     await put('sessions', { ...session, payDate });
     return reload();
   }
+}
+
+// ---- Danışanlarım: list with search, and one client's detail page ----
+
+function clientsScreen() {
+  if (state.clientId) return clientDetail(state.clientId);
+  return `
+    <h2>Danışanlarım</h2>
+    <label class="card search">Ara
+      <input type="search" placeholder="İsme göre ara" data-field="search" value="${esc(state.search)}">
+    </label>
+    <div id="client-list">${clientList()}</div>`;
+}
+
+function clientList() {
+  const q = state.search.trim().toLocaleLowerCase('tr-TR');
+  const debtors = new Map(debtorsOf({ clients: state.clients, sessions: state.sessions }).map((d) => [d.clientId, d]));
+  const shown = state.clients.filter((c) => c.name.toLocaleLowerCase('tr-TR').includes(q));
+  if (!shown.length) {
+    return `<p class="empty">${state.clients.length ? 'Bu isimde danışan yok.' : 'Henüz danışan yok. Program sekmesinden ekleyebilirsiniz.'}</p>`;
+  }
+  return shown.map((c) => {
+    const debt = debtors.get(c.id);
+    const held = state.sessions.filter((s) => s.clientId === c.id && s.status === 'done').length;
+    return `
+      <button type="button" class="client-item" data-action="open-client" data-id="${esc(c.id)}">
+        <span><strong>${esc(c.name)}</strong><small>%${roomPctOf(c)} oda payı · ${held} seans</small></span>
+        ${debt ? `<span class="owe-badge">${money(debt.owed)}</span>` : ''}
+      </button>`;
+  }).join('');
+}
+
+function clientDetail(id) {
+  const client = state.clients.find((c) => c.id === id);
+  if (!client) {
+    state.clientId = '';
+    return clientsScreen();
+  }
+  const sessions = state.sessions
+    .filter((s) => s.clientId === id)
+    .sort((a, b) => b.start.localeCompare(a.start));
+  const held = sessions.filter((s) => s.status === 'done');
+  const paid = held.filter((s) => payStateOf(s) === 'paid');
+  const owing = held.filter((s) => payStateOf(s) !== 'paid');
+  const total = (list) => list.reduce((sum, s) => sum + (Number(s.fee) || 0), 0);
+  const rows = sessions.map((s) => `
+    <article class="card session-row">
+      <div class="row"><strong>${esc(fmtRange(s))}</strong></div>
+      <p>${esc(sessionStateText(s))}</p>
+    </article>`).join('');
+  return `
+    <button type="button" class="back" data-action="close-client">‹ Danışanlarım</button>
+    <h2>${esc(client.name)}</h2>
+    <section class="card" data-client="${esc(client.id)}">
+      <label>Oda payı (%) <input type="number" min="0" max="100" step="1" inputmode="numeric" data-field="pct" value="${esc(client.roomPct ?? '')}"></label>
+      <label>Notlar <textarea data-field="notes" placeholder="Hedefler, ilerleme, hatırlatmalar">${esc(client.notes ?? '')}</textarea></label>
+    </section>
+    <section class="card stats">
+      <div><span>Seans</span><strong>${held.length}</strong></div>
+      <div><span>Alınan</span><strong>${money(total(paid))}</strong></div>
+      <div><span>Borç</span><strong>${money(total(owing))}</strong></div>
+    </section>
+    <h3>Seanslar</h3>
+    ${rows || '<p class="empty">Henüz seans yok.</p>'}`;
+}
+
+function sessionStateText(s) {
+  if (s.status === 'cancelled') return 'İptal edildi';
+  if (s.status !== 'done') return 'Planlı';
+  return payStateOf(s) === 'paid' ? `Ödendi · ${fmtDay(payDateOf(s))}` : 'Ödenmedi';
+}
+
+function fmtDay(key) {
+  if (!key) return '';
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// ---- Özet: last twelve months of net income as bars ----
+
+function monthShort(key) {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('tr-TR', { month: 'short' });
+}
+
+function trendChart() {
+  const months = monthlyNet({
+    clients: state.clients,
+    sessions: state.sessions,
+    endMonth: toKey(new Date()).slice(0, 7),
+    count: 12,
+  });
+  const max = Math.max(1, ...months.map((m) => m.net));
+  const selected = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month }).overall.net;
+  const bars = months.map((m, i) => {
+    const height = Math.max(4, Math.round((m.net / max) * 100));
+    return `
+      <button type="button" class="bar ${m.month === state.month ? 'current' : ''}" data-action="pick-month" data-month="${m.month}"
+        style="--h:${height}%;--d:${i * 45}ms" aria-label="${monthLabel(m.month)}: ${money(m.net)}">
+        <span class="bar-track"><span class="bar-fill"></span></span>
+        <span class="bar-label">${monthShort(m.month)}</span>
+      </button>`;
+  }).join('');
+  return `
+    <section class="card chart">
+      <h3>Son 12 ay net gelir</h3>
+      <p class="chart-note">${monthLabel(state.month)}: <strong>${money(selected)}</strong></p>
+      <div class="bars">${bars}</div>
+    </section>`;
+}
+
+// ---- Ben: debtors and the evening reminder ----
+
+function meScreen() {
+  const debtors = debtorsOf({ clients: state.clients, sessions: state.sessions });
+  const list = debtors.map((d) => `
+    <button type="button" class="client-item" data-action="open-client" data-id="${esc(d.clientId)}">
+      <span><strong>${esc(d.name)}</strong><small>${d.count} seans ödenmedi</small></span>
+      <span class="owed"><strong>${money(d.owed)}</strong></span>
+    </button>`).join('');
+  return `
+    <h2>Ben</h2>
+    <h3>Borçlular</h3>
+    ${list || '<p class="empty">Ödenmemiş seans yok. Harika!</p>'}
+    <h3>Hatırlatma</h3>
+    <section class="card reminder">
+      <p>Her akşam 21:00'de yarının seanslarını hatırlatır. Ödemesi bekleyen danışanlar bildirimde ayrıca yazılır.</p>
+      ${reminderControls()}
+      ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
+    </section>`;
+}
+
+function reminderControls() {
+  if (!('Notification' in window)) {
+    return '<p class="hint">Bu cihazda bildirim desteklenmiyor. Uygulamayı ana ekrana ekleyip oradan açın.</p>';
+  }
+  const on = readPrefs().enabled && Notification.permission === 'granted';
+  return `
+    <div class="status-buttons two">
+      <button type="button" data-action="toggle-reminder" aria-pressed="${on}" class="${on ? 'active' : ''}">${on ? 'Bildirimler açık' : 'Bildirimler kapalı'}</button>
+      <button type="button" data-action="test-reminder">Önizleme</button>
+    </div>`;
+}
+
+// The message for the sessions of tomorrow, built from what is on the phone.
+function tomorrowMessage() {
+  const now = new Date();
+  const tomorrow = toKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const sessions = state.sessions
+    .filter((s) => s.status === 'planned' && toKey(new Date(s.start)) === tomorrow)
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .map((s) => ({ clientId: s.clientId, name: clientName(s.clientId), time: hm(s.start) }));
+  return buildReminder({ sessions, debtors: debtorsOf({ clients: state.clients, sessions: state.sessions }) });
+}
+
+// Runs the reminder once a day after the reminder hour, while reminders are switched on and permission is granted.
+async function checkReminder() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const prefs = readPrefs();
+  const now = new Date();
+  const todayKey = toKey(now);
+  if (!shouldRemind({ now, enabled: prefs.enabled, lastDay: prefs.lastDay, todayKey })) return;
+  writePrefs({ ...prefs, lastDay: todayKey });
+  await showReminder(tomorrowMessage());
+}
+
+async function toggleReminder() {
+  const prefs = readPrefs();
+  if (prefs.enabled) {
+    writePrefs({ ...prefs, enabled: false });
+    state.notice = 'Bildirimler kapatıldı.';
+    return render();
+  }
+  if (!('Notification' in window)) {
+    state.notice = 'Bildirimler bu cihazda desteklenmiyor. Uygulamayı ana ekrana ekleyip oradan açın.';
+    return render();
+  }
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (permission !== 'granted') {
+    state.notice = 'Bildirim izni verilmedi. Telefon ayarlarından Takip için bildirimlere izin verebilirsiniz.';
+    return render();
+  }
+  writePrefs({ ...prefs, enabled: true });
+  state.notice = "Bildirimler açıldı. Her akşam 21:00'de yarının seanslarını hatırlatacağım.";
+  return render();
+}
+
+async function testReminder() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    state.notice = 'Önizleme için önce bildirimleri açın.';
+    return render();
+  }
+  await showReminder(tomorrowMessage());
 }
 
 async function onSubmit(e) {

@@ -49,3 +49,32 @@ export function computeSummary({ clients, sessions, month }) {
   };
   return { perClient, overall };
 }
+
+export function shiftMonth(key, delta) {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Net income for each of the last `count` months, oldest first, ending with `endMonth`.
+export function monthlyNet({ clients, sessions, endMonth, count }) {
+  const months = [];
+  for (let i = count - 1; i >= 0; i--) months.push(shiftMonth(endMonth, -i));
+  return months.map((month) => ({ month, net: computeSummary({ clients, sessions, month }).overall.net }));
+}
+
+// Held sessions that are not paid yet, per client, largest debt first. Planned and cancelled sessions are not debts.
+export function debtorsOf({ clients, sessions }) {
+  return clients
+    .map((client) => {
+      const owing = sessions.filter((s) => s.clientId === client.id && s.status === 'done' && payStateOf(s) !== 'paid');
+      return {
+        clientId: client.id,
+        name: client.name,
+        count: owing.length,
+        owed: owing.reduce((sum, s) => sum + (Number(s.fee) || 0), 0),
+      };
+    })
+    .filter((d) => d.count > 0)
+    .sort((a, b) => b.owed - a.owed);
+}
