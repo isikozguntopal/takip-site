@@ -3,6 +3,6 @@ export const CONFIG = {
   calendarName: '',
   // Address of the reminder server, and the public VAPID key it signs with. Empty means no server: reminders then
   // show only while the app is open.
-  pushServer: 'REPLACE_WITH_WORKER_URL',
+  pushServer: 'https://takip-reminder.lazer-kafes.workers.dev',
   vapidPublicKey: 'BO8WFDAVR2kIrdX38hUJVk59zPqKsGOrbgukQe4nAxOI7QkXG65pTKwN7i0gtDJdSVFA3lngZQFrJoQ7OroZQJs',
 };
