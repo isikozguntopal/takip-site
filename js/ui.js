@@ -200,7 +200,30 @@ function monthStrip() {
       <button type="button" data-action="prev-month" aria-label="Önceki ay">‹</button>
       <strong>${monthLabel(state.month)}</strong>
       <button type="button" data-action="next-month" aria-label="Sonraki ay">›</button>
-    </div>`;
+    </div>
+    ${state.month === toKey(new Date()).slice(0, 7)
+      ? ''
+      : '<div class="today-row"><button type="button" class="today-btn" data-action="this-month">Bu aya dön</button></div>'}`;
+}
+
+// A one-off visit: a session that is not part of a weekly program. It counts in the summary like any other session.
+function extraSessionForm() {
+  if (!state.clients.length) return '';
+  const options = state.clients.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  return `
+    <details class="card extra">
+      <summary>＋ Ek seans ekle</summary>
+      <form data-form="extraSession">
+        <label>Danışan <select name="clientId">${options}</select></label>
+        <label>Tarih <input type="date" name="date" value="${toKey(new Date())}" required></label>
+        <div class="day-fields">
+          <label>Saat <input name="time" data-field="extraTime" inputmode="numeric" placeholder="09:00" maxlength="5" required></label>
+          <label>Süre (dk) <input name="duration" type="number" min="5" step="5" inputmode="numeric" value="${DEFAULT_DURATION}"></label>
+          <label>Ücret (₺) <input name="fee" type="number" min="0" step="1" inputmode="numeric" required></label>
+        </div>
+        <button type="submit" class="wide">Seansı ekle</button>
+      </form>
+    </details>`;
 }
 
 // The client picker also adds new clients. A new client starts with every field empty.
@@ -303,6 +326,8 @@ function sessionsScreen() {
   return `
     <h2>Seanslar</h2>
     ${monthStrip()}
+    ${extraSessionForm()}
+    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
 
@@ -441,6 +466,10 @@ async function onClick(e) {
     state.month = action.dataset.month;
     return render();
   }
+  if (action.dataset.action === 'this-month') {
+    state.month = toKey(new Date()).slice(0, 7);
+    return render();
+  }
   if (action.dataset.action === 'toggle-reminder') return toggleReminder();
   if (action.dataset.action === 'test-reminder') return testReminder();
 
@@ -521,7 +550,7 @@ function onInput(e) {
     if (list) list.innerHTML = clientList();
     return;
   }
-  if (e.target.dataset.field !== 'time' && e.target.dataset.field !== 'rsTime') return;
+  if (!['time', 'rsTime', 'extraTime'].includes(e.target.dataset.field)) return;
   e.target.value = formatTyping(e.target.value, e.inputType?.startsWith('delete'));
 }
 
@@ -618,7 +647,7 @@ function clientDetail(id) {
   }
   const sessions = state.sessions
     .filter((s) => s.clientId === id)
-    .sort((a, b) => b.start.localeCompare(a.start));
+    .sort((a, b) => a.start.localeCompare(b.start));
   const held = sessions.filter((s) => s.status === 'done');
   const paid = held.filter((s) => payStateOf(s) === 'paid');
   const owing = held.filter((s) => payStateOf(s) !== 'paid');
@@ -783,9 +812,38 @@ async function testReminder() {
   await showReminder(tomorrowMessage());
 }
 
+// Adds a one-off session. It is saved as planned; marking it held and paid works the same as for weekly sessions.
+async function addExtraSession(form) {
+  const data = new FormData(form);
+  const time = normalizeTime(data.get('time'));
+  if (time === null) {
+    state.notice = 'Saati 09:30 biçiminde yazın.';
+    return render();
+  }
+  const [y, m, d] = String(data.get('date')).split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  const start = new Date(y, m - 1, d, hh, mm);
+  const duration = Math.max(5, Number(data.get('duration')) || DEFAULT_DURATION);
+  const end = new Date(start.getTime() + duration * 60000);
+  await put('sessions', {
+    id: crypto.randomUUID(),
+    clientId: String(data.get('clientId')),
+    start: start.toISOString(),
+    end: end.toISOString(),
+    status: 'planned',
+    fee: Math.max(0, Number(data.get('fee')) || 0),
+    payState: 'none',
+    payDate: '',
+  });
+  state.notice = '';
+  state.month = monthOfIso(start.toISOString());
+  return reload();
+}
+
 async function onSubmit(e) {
   e.preventDefault();
   const form = e.target;
+  if (form.dataset.form === 'extraSession') return addExtraSession(form);
   if (form.dataset.form !== 'newClient') return;
 
   const name = String(new FormData(form).get('name') ?? '').trim();

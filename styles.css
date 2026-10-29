@@ -15,6 +15,9 @@
 
 * { box-sizing: border-box; }
 
+/* Taps never wait for or trigger the double-tap zoom, so quick repeated taps do not zoom the page. */
+html, body, button, input, select, textarea, label { touch-action: manipulation; }
+
 body {
   margin: 0;
   padding: 16px 16px 120px;
@@ -65,7 +68,6 @@ h3 { color: var(--purple-700); margin: 0; font-size: 1.15rem; }
 .motto .heart {
   font-size: 1.8rem;
   color: #ffd1e6;
-  animation: beat 1.8s var(--ease) infinite;
   display: inline-block;
 }
 
@@ -436,6 +438,26 @@ button.wide { width: 100%; background: var(--purple-500); }
 .bar.current .bar-label { color: var(--purple-700); font-weight: 700; }
 
 .status-buttons.two { grid-template-columns: 1fr 1fr; }
+
+.today-row { display: flex; justify-content: center; margin: -4px 0 6px; }
+.today-btn {
+  background: #fff;
+  color: var(--purple-700);
+  border: 1px solid var(--purple-500);
+  padding: 8px 18px;
+  min-height: 0;
+  font-size: 0.9rem;
+  box-shadow: var(--shadow);
+}
+
+.extra summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--purple-700);
+  font-weight: 600;
+}
+.extra summary::-webkit-details-marker { display: none; }
+.extra form { display: grid; gap: 10px; margin-top: 12px; }
 .reminder p { margin: 0; }
 
 @keyframes grow {
@@ -449,6 +471,10 @@ button.wide { width: 100%; background: var(--purple-500); }
 .screen.enter .card,
 .screen.enter .empty,
 .screen.enter .session { animation: rise 0.5s var(--ease) both; }
+.screen.enter .client-item { animation: rise 0.45s var(--ease) both; }
+.screen.enter .client-item:nth-child(2) { animation-delay: 0.05s; }
+.screen.enter .client-item:nth-child(3) { animation-delay: 0.1s; }
+.screen.enter .client-item:nth-child(4) { animation-delay: 0.15s; }
 .screen.enter .card:nth-child(2) { animation-delay: 0.06s; }
 .screen.enter .card:nth-child(3) { animation-delay: 0.12s; }
 .screen.enter .card:nth-child(4) { animation-delay: 0.18s; }
@@ -456,12 +482,6 @@ button.wide { width: 100%; background: var(--purple-500); }
 @keyframes rise {
   from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: none; }
-}
-@keyframes beat {
-  0%, 100% { transform: scale(1); }
-  15% { transform: scale(1.18); }
-  30% { transform: scale(1); }
-  45% { transform: scale(1.12); }
 }
 
 @media (prefers-reduced-motion: reduce) {
