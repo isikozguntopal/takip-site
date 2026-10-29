@@ -45,6 +45,41 @@ export function writePrefs(prefs) {
   }
 }
 
+// The server only needs the phone's push address. Nothing about clients or sessions leaves the phone.
+export function serverReady(config) {
+  return Boolean(config.pushServer) && !config.pushServer.startsWith('REPLACE') && Boolean(config.vapidPublicKey);
+}
+
+function keyBytes(base64url) {
+  const padded = base64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(base64url.length / 4) * 4, '=');
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+}
+
+export async function subscribeToServer(config) {
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = (await registration.pushManager.getSubscription()) ?? await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes(config.vapidPublicKey),
+  });
+  await fetch(`${config.pushServer}/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(subscription.toJSON()),
+  });
+}
+
+export async function unsubscribeFromServer(config) {
+  const registration = await navigator.serviceWorker?.ready;
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+  await fetch(`${config.pushServer}/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  });
+  await subscription.unsubscribe();
+}
+
 // Installed home-screen apps show notifications through the service worker, which keeps working when the page is closed.
 export async function showReminder({ title, body }) {
   const options = {

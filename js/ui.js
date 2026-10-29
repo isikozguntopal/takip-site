@@ -2,7 +2,8 @@ import { getAll, put, remove } from './db.js';
 import { computeSummary, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
 import { expandSeries, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
-import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder } from './reminder.js';
+import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer } from './reminder.js';
+import { CONFIG } from '../config.js';
 
 const DAY_MS = 86400000;
 // Sessions are written this far ahead, so any month in the next year shows its sessions.
@@ -537,7 +538,6 @@ async function onChange(e) {
   if (clientEl) {
     const clientId = clientEl.dataset.client;
 
-    if (field === 'notes') return saveClient(clientId, { notes: e.target.value });
     if (field === 'pct') {
       const pct = Math.min(100, Math.max(0, Number(e.target.value) || 0));
       return saveClient(clientId, { roomPct: pct });
@@ -633,7 +633,6 @@ function clientDetail(id) {
     <h2>${esc(client.name)}</h2>
     <section class="card" data-client="${esc(client.id)}">
       <label>Oda payı (%) <input type="number" min="0" max="100" step="1" inputmode="numeric" data-field="pct" value="${esc(client.roomPct ?? '')}"></label>
-      <label>Notlar <textarea data-field="notes" placeholder="Hedefler, ilerleme, hatırlatmalar">${esc(client.notes ?? '')}</textarea></label>
     </section>
     <section class="card stats">
       <div><span>Seans</span><strong>${held.length}</strong></div>
@@ -735,6 +734,8 @@ function tomorrowMessage() {
 
 // Runs the reminder once a day after the reminder hour, while reminders are switched on and permission is granted.
 async function checkReminder() {
+  // With the server running, the 21:00 push comes from it, so the phone must not show a second one.
+  if (serverReady(CONFIG)) return;
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const prefs = readPrefs();
   const now = new Date();
@@ -748,6 +749,7 @@ async function toggleReminder() {
   const prefs = readPrefs();
   if (prefs.enabled) {
     writePrefs({ ...prefs, enabled: false });
+    if (serverReady(CONFIG)) await unsubscribeFromServer(CONFIG).catch(() => {});
     state.notice = 'Bildirimler kapatıldı.';
     return render();
   }
@@ -761,6 +763,14 @@ async function toggleReminder() {
     return render();
   }
   writePrefs({ ...prefs, enabled: true });
+  if (serverReady(CONFIG)) {
+    try {
+      await subscribeToServer(CONFIG);
+    } catch {
+      state.notice = 'Bildirim sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.';
+      return render();
+    }
+  }
   state.notice = "Bildirimler açıldı. Her akşam 21:00'de yarının seanslarını hatırlatacağım.";
   return render();
 }
