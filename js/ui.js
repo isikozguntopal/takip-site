@@ -4,6 +4,9 @@ import { expandSeries, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
 import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer } from './reminder.js';
 import { CONFIG } from '../config.js';
+import { AREAS, FLAGS, ACTIVITIES, activitiesFor, adaptationsFor, areaLabel } from './activities.js';
+import { illustration } from './illustrations.js';
+import { buildHomePdf, savePdf, pdfFileName } from './homePdf.js';
 
 const DAY_MS = 86400000;
 // Sessions are written this far ahead, so any month in the next year shows its sessions.
@@ -14,14 +17,17 @@ const ICON = {
   summary: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   clients: '<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M16 4.5a4 4 0 0 1 0 7M22 21c0-3-2-5-5-5.5"/>',
   me: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
+  activities: '<path d="M12 3l1.9 4.6 4.6 1.9-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.9 2.1 2.1.9-2.1.9L19 20l-.9-2.1-2.1-.9 2.1-.9z"/>',
 };
 const TABS = [
   ['program', 'Program'],
   ['sessions', 'Seanslar'],
   ['summary', 'Özet'],
-  ['clients', 'Danışanlar'],
+  ['clients', 'Danışan'],
+  ['activities', 'Aktivite'],
   ['me', 'Ben'],
 ];
+const AUTHOR_KEY = 'takip-pdf-author';
 // How often the open app checks whether the evening reminder is due.
 const REMINDER_CHECK_MS = 60000;
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
@@ -40,8 +46,14 @@ const state = {
   rescheduleId: '',
   clientId: '',
   search: '',
+  actClientId: '',
+  showAllActs: false,
+  // { clientId, status: 'working' | 'ready' | 'error', name, error }
+  pdf: null,
   notice: '',
 };
+// The last PDF made, kept until the user downloads it or changes the client's program.
+let pdfBlob = null;
 let root;
 // Only the first render of a tab plays the entrance animation, so typing and saving do not replay it.
 let lastTab = null;
@@ -118,6 +130,7 @@ function screen() {
     case 'sessions': return sessionsScreen();
     case 'summary': return summaryScreen();
     case 'clients': return clientsScreen();
+    case 'activities': return activitiesScreen();
     case 'me': return meScreen();
     default: return programScreen();
   }
@@ -466,6 +479,23 @@ async function onClick(e) {
     state.month = action.dataset.month;
     return render();
   }
+  const actClient = e.target.closest('[data-act-client]')?.dataset.actClient;
+  if (actClient && action.dataset.action === 'toggle-area') {
+    return updateActivityProfile(actClient, (p) => ({ ...p, areas: toggled(p.areas, action.dataset.id) }));
+  }
+  if (actClient && action.dataset.action === 'toggle-flag') {
+    return updateActivityProfile(actClient, (p) => ({ ...p, flags: toggled(p.flags, action.dataset.id) }));
+  }
+  if (actClient && action.dataset.action === 'toggle-activity') {
+    return updateHomeProgram(actClient, (p) => ({ ...p, selected: toggled(p.selected, action.dataset.id) }));
+  }
+  if (action.dataset.action === 'toggle-all-acts') {
+    state.showAllActs = !state.showAllActs;
+    return render();
+  }
+  if (actClient && action.dataset.action === 'make-pdf') return makePdf(actClient);
+  if (action.dataset.action === 'download-pdf') return downloadPdf();
+
   if (action.dataset.action === 'this-month') {
     state.month = toKey(new Date()).slice(0, 7);
     return render();
@@ -557,6 +587,20 @@ function onInput(e) {
 async function onChange(e) {
   const field = e.target.dataset.field;
 
+  if (field === 'actClient') {
+    state.actClientId = e.target.value;
+    return render();
+  }
+  if (field === 'actAuthor') return writeAuthor(e.target.value.trim());
+  const actClient = e.target.closest('[data-act-client]')?.dataset.actClient;
+  if (actClient && field === 'actNote') {
+    const id = e.target.dataset.id;
+    return updateHomeProgram(actClient, (p) => ({ ...p, notes: { ...p.notes, [id]: e.target.value } }));
+  }
+  if (actClient && field === 'actIntro') {
+    return updateHomeProgram(actClient, (p) => ({ ...p, intro: e.target.value }));
+  }
+
   if (field === 'pick') {
     state.programClientId = e.target.value;
     state.notice = '';
@@ -606,6 +650,182 @@ async function onChange(e) {
     const payDate = payStateOf(session) === 'paid' ? value || toKey(new Date()) : value;
     await put('sessions', { ...session, payDate });
     return reload();
+  }
+}
+
+// ---- Aktivite: home activity programs and their PDF ----
+
+const toggled = (list, id) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+
+// What is marked about the child: the areas to work on and the things to keep in mind. Saved on the client.
+function profileOf(client) {
+  return { areas: client.profile?.areas ?? [], flags: client.profile?.flags ?? [] };
+}
+
+// The chosen activities, a note per activity and a general note to the family. Saved on the client.
+function homeProgramOf(client) {
+  return {
+    selected: client.homeProgram?.selected ?? [],
+    notes: client.homeProgram?.notes ?? {},
+    intro: client.homeProgram?.intro ?? '',
+  };
+}
+
+// Any change to what goes into the PDF makes the last PDF out of date.
+function dropPdf(clientId) {
+  if (state.pdf?.clientId === clientId) {
+    state.pdf = null;
+    pdfBlob = null;
+  }
+}
+
+function updateActivityProfile(clientId, change) {
+  const client = state.clients.find((c) => c.id === clientId);
+  dropPdf(clientId);
+  return saveClient(clientId, { profile: change(profileOf(client)) });
+}
+
+function updateHomeProgram(clientId, change) {
+  const client = state.clients.find((c) => c.id === clientId);
+  dropPdf(clientId);
+  return saveClient(clientId, { homeProgram: change(homeProgramOf(client)) });
+}
+
+function readAuthor() {
+  try {
+    return localStorage.getItem(AUTHOR_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeAuthor(value) {
+  try {
+    localStorage.setItem(AUTHOR_KEY, value);
+  } catch {
+    // Storage can be blocked; the name is then simply asked again next time.
+  }
+}
+
+function activitiesScreen() {
+  if (!state.clients.length) {
+    return '<h2>Ev Aktiviteleri</h2><p class="empty">Önce Program sekmesinden bir danışan ekleyin.</p>';
+  }
+  const client = state.clients.find((c) => c.id === state.actClientId) ?? state.clients[0];
+  const id = esc(client.id);
+  const profile = profileOf(client);
+  const program = homeProgramOf(client);
+  const options = state.clients
+    .map((c) => `<option value="${esc(c.id)}" ${c.id === client.id ? 'selected' : ''}>${esc(c.name)}</option>`)
+    .join('');
+  const chip = (action, item, on, kind) => `
+    <button type="button" class="chip ${kind} ${on ? 'active' : ''}" data-action="${action}" data-id="${item.id}" aria-pressed="${on}">${esc(item.label)}</button>`;
+  const filtered = profile.areas.length && !state.showAllActs;
+  const shown = filtered ? activitiesFor(profile.areas) : ACTIVITIES;
+  const groups = AREAS
+    .filter((area) => shown.some((a) => a.area === area.id))
+    .map((area) => `
+      <h3 class="act-group">${esc(area.label)}</h3>
+      ${shown.filter((a) => a.area === area.id).map((a) => activityCard(a, program, profile)).join('')}`)
+    .join('');
+  return `
+    <h2>Ev Aktiviteleri</h2>
+    <label class="card">Danışan
+      <select data-field="actClient">${options}</select>
+    </label>
+    <section class="card" data-act-client="${id}">
+      <h3>Çalışılacak alanlar</h3>
+      <div class="chips">${AREAS.map((a) => chip('toggle-area', a, profile.areas.includes(a.id), 'area')).join('')}</div>
+      <h3>Dikkat edilecekler</h3>
+      <div class="chips">${FLAGS.map((f) => chip('toggle-flag', f, profile.flags.includes(f.id), 'flag')).join('')}</div>
+      <p class="hint">İşaretledikleriniz bu danışan için saklanır. Önerilen aktiviteleri ve PDF'teki çocuğa özel ipuçlarını belirler.</p>
+    </section>
+    <div class="act-filter">
+      <h3>${filtered ? 'Önerilen aktiviteler' : 'Tüm aktiviteler'}</h3>
+      ${profile.areas.length ? `<button type="button" class="link" data-action="toggle-all-acts">${filtered ? 'Tümünü göster' : 'Önerilenleri göster'}</button>` : ''}
+    </div>
+    <div data-act-client="${id}">${groups}</div>
+    ${pdfCard(client, program)}`;
+}
+
+function activityCard(activity, program, profile) {
+  const on = program.selected.includes(activity.id);
+  const adaptations = on ? adaptationsFor(activity, profile.flags) : [];
+  return `
+    <article class="card act ${on ? 'on' : ''}">
+      <div class="act-head">
+        <div class="act-art" aria-hidden="true">${illustration(activity.id)}</div>
+        <div><strong>${esc(activity.title)}</strong><p>${esc(activity.goal)}</p></div>
+      </div>
+      <button type="button" class="act-pick ${on ? 'active' : ''}" data-action="toggle-activity" data-id="${activity.id}" aria-pressed="${on}">
+        ${on ? '✓ Programda' : '+ Programa ekle'}
+      </button>
+      ${on ? `
+        ${adaptations.length ? `<ul class="act-adapt">${adaptations.map((a) => `<li><b>${esc(a.label)}:</b> ${esc(a.text)}</li>`).join('')}</ul>` : ''}
+        <label>Bu aktivite için not
+          <textarea data-field="actNote" data-id="${activity.id}" placeholder="Örn. Günde 2 kez, 5'er dakika">${esc(program.notes[activity.id] ?? '')}</textarea>
+        </label>` : ''}
+    </article>`;
+}
+
+function pdfCard(client, program) {
+  const count = program.selected.length;
+  const pdf = state.pdf?.clientId === client.id ? state.pdf : null;
+  const working = pdf?.status === 'working';
+  return `
+    <section class="card pdf-card" data-act-client="${esc(client.id)}">
+      <h3>PDF</h3>
+      <p>${count ? `${count} aktivite seçildi.` : 'PDF için en az bir aktiviteyi programa ekleyin.'}</p>
+      <label>Aileye genel not
+        <textarea data-field="actIntro" placeholder="Örn. Bu ay ince motor becerilere odaklanıyoruz.">${esc(program.intro)}</textarea>
+      </label>
+      <label>Hazırlayan (PDF'te görünür)
+        <input data-field="actAuthor" value="${esc(readAuthor())}" placeholder="Adınız ve unvanınız">
+      </label>
+      <button type="button" class="wide" data-action="make-pdf" ${count && !working ? '' : 'disabled'}>${working ? 'Hazırlanıyor…' : 'PDF oluştur'}</button>
+      ${pdf?.status === 'ready' ? `
+        <button type="button" class="wide download" data-action="download-pdf">İndir</button>
+        <p class="hint">Telefonda açılan menüden "Dosyalara Kaydet" ile indirebilir ya da aileye doğrudan gönderebilirsiniz.</p>` : ''}
+      ${pdf?.status === 'error' ? `<p class="notice">${esc(pdf.error)}</p>` : ''}
+    </section>`;
+}
+
+async function makePdf(clientId) {
+  const client = state.clients.find((c) => c.id === clientId);
+  const profile = profileOf(client);
+  const program = homeProgramOf(client);
+  const items = ACTIVITIES
+    .filter((a) => program.selected.includes(a.id))
+    .map((activity) => ({ activity, note: program.notes[activity.id] ?? '' }));
+  if (!items.length) return;
+  state.pdf = { clientId, status: 'working' };
+  render();
+  try {
+    const today = new Date();
+    pdfBlob = await buildHomePdf({
+      childName: client.name,
+      author: readAuthor(),
+      dateLabel: today.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' }),
+      intro: program.intro,
+      flags: profile.flags,
+      items,
+      areaLabels: AREAS.filter((area) => items.some((i) => i.activity.area === area.id)).map((area) => areaLabel(area.id)),
+    });
+    state.pdf = { clientId, status: 'ready', name: pdfFileName(client.name, toKey(today)) };
+  } catch {
+    pdfBlob = null;
+    state.pdf = { clientId, status: 'error', error: 'PDF oluşturulamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.' };
+  }
+  render();
+}
+
+async function downloadPdf() {
+  if (!pdfBlob || state.pdf?.status !== 'ready') return;
+  try {
+    await savePdf(pdfBlob, state.pdf.name);
+  } catch {
+    state.pdf = { ...state.pdf, status: 'error', error: 'PDF indirilemedi. Tekrar deneyin.' };
+    render();
   }
 }
 
