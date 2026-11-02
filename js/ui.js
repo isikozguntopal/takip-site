@@ -1,6 +1,6 @@
 import { getAll, put, remove } from './db.js';
 import { computeSummary, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
-import { expandSeries, toKey } from './schedule.js';
+import { expandSeries, extraSeriesIds, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
 import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer } from './reminder.js';
 import { CONFIG } from '../config.js';
@@ -81,7 +81,30 @@ async function reload() {
   );
   if (!state.programClientId) state.programClientId = state.clients[0]?.id ?? NEW_CLIENT;
   await generateSessions();
+  await removeExtraSeries();
   render();
+}
+
+// Drops a weekday that was written twice, and the sessions it doubled. When only the doubled copy has a status or a
+// payment, that copy takes its twin's place, so what was recorded stays and the day shows once. A session with no twin
+// at the same start is kept as it is.
+async function removeExtraSeries() {
+  const extra = new Set(extraSeriesIds(state.series, toKey(new Date())));
+  if (!extra.size) return;
+  const plain = (s) => s.status === 'planned' && !s.moved && payStateOf(s) !== 'paid';
+  const startOf = (s) => `${s.clientId}_${s.start}`;
+  const twins = new Map(state.sessions.filter((s) => !extra.has(s.seriesId)).map((s) => [startOf(s), s]));
+  for (const s of state.sessions.filter((x) => extra.has(x.seriesId))) {
+    const twin = twins.get(startOf(s));
+    if (!twin) continue;
+    if (plain(s)) await remove('sessions', s.id);
+    else if (plain(twin)) {
+      await put('sessions', { ...s, id: twin.id, seriesId: twin.seriesId });
+      await remove('sessions', s.id);
+    }
+  }
+  for (const id of extra) await remove('series', id);
+  [state.series, state.sessions] = await Promise.all(['series', 'sessions'].map(getAll));
 }
 
 // Writes the planned sessions of every weekly series up to HORIZON_DAYS ahead. Sessions that already exist are left alone,
@@ -406,6 +429,16 @@ async function saveProgram(clientId, days) {
   return reload();
 }
 
+// Program changes run one at a time, and each reads the days only when its turn comes. Two quick edits (the time,
+// then the fee) used to overlap: both started from the same old days and each wrote its own copy of them.
+let programQueue = Promise.resolve();
+function changeProgram(clientId, update) {
+  programQueue = programQueue
+    .then(() => saveProgram(clientId, update(currentDays(clientId))))
+    .catch((err) => console.error(err));
+  return programQueue;
+}
+
 async function saveClient(clientId, changes) {
   const client = state.clients.find((c) => c.id === clientId);
   await put('clients', { ...client, ...changes });
@@ -530,17 +563,14 @@ async function onClick(e) {
   if (clientEl && action.dataset.action === 'toggle-day') {
     const clientId = clientEl.dataset.client;
     const w = Number(action.dataset.w);
-    const days = currentDays(clientId);
-    const on = days.some((d) => d.w === w);
-    const next = on
+    return changeProgram(clientId, (days) => (days.some((d) => d.w === w)
       ? days.filter((d) => d.w !== w)
       : [...days, {
           w,
           time: nearestValue(w, days, 'time') ?? '',
           duration: nearestValue(w, days, 'duration') ?? DEFAULT_DURATION,
           fee: nearestValue(w, days, 'fee'),
-        }];
-    return saveProgram(clientId, next);
+        }]));
   }
 }
 
@@ -618,7 +648,6 @@ async function onChange(e) {
 
     if (['time', 'duration', 'fee'].includes(field)) {
       const w = Number(e.target.dataset.w);
-      const days = currentDays(clientId);
       let value = e.target.value;
 
       if (field === 'time') {
@@ -632,7 +661,7 @@ async function onChange(e) {
       if (field === 'fee') value = value === '' ? null : Math.max(0, Number(value) || 0);
 
       const key = field;
-      return saveProgram(clientId, days.map((d) => (d.w === w ? { ...d, [key]: value } : d)));
+      return changeProgram(clientId, (days) => days.map((d) => (d.w === w ? { ...d, [key]: value } : d)));
     }
     return;
   }

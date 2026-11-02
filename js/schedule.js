@@ -37,3 +37,15 @@ export function expandSeries(series, fromDate, toDate) {
   }
   return out;
 }
+
+// A client has at most one active series per weekday. When two overlapping program saves wrote the same day twice,
+// the last one is the one the program screen shows, so every earlier active one for that day is an extra.
+export function extraSeriesIds(series, todayKey) {
+  const lastByDay = new Map();
+  for (const s of series) {
+    if (s.endDate && s.endDate < todayKey) continue;
+    lastByDay.set(`${s.clientId}_${s.weekdays[0]}`, s.id);
+  }
+  const keep = new Set(lastByDay.values());
+  return series.filter((s) => !(s.endDate && s.endDate < todayKey) && !keep.has(s.id)).map((s) => s.id);
+}
