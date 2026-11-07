@@ -69,6 +69,7 @@ export async function startUi(el) {
   root.addEventListener('touchstart', onSwipeStart, { passive: true });
   root.addEventListener('touchmove', onSwipeMove, { passive: true });
   root.addEventListener('touchend', onSwipeEnd, { passive: true });
+  root.addEventListener('touchcancel', onSwipeEnd, { passive: true });
   await reload();
   // The reminder is checked on open, every minute while open, and when the app comes back to the front.
   checkReminder();
@@ -643,7 +644,10 @@ let swipedAt = 0;
 
 function onSwipeStart(e) {
   const el = e.target.closest('.swipe-row .client-item');
-  for (const open of root.querySelectorAll('.client-item.open')) if (open !== el) open.classList.remove('open');
+  // Touching another row closes an open card. The open card's own row is left alone: closing it on the touch of its
+  // Sil button slid the card back under the finger, and the tap opened the client instead of deleting.
+  const row = e.target.closest('.swipe-row');
+  for (const open of root.querySelectorAll('.client-item.open')) if (open.parentElement !== row) open.classList.remove('open');
   if (!el) return;
   const t = e.touches[0];
   swipe = { el, x: t.clientX, y: t.clientY, dx: 0, base: el.classList.contains('open') ? -SWIPE_OPEN : 0, sideways: null };
