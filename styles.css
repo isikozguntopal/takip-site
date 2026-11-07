@@ -359,6 +359,37 @@ button.wide { width: 100%; background: var(--purple-500); }
   font-size: 1rem;
 }
 .client-item span { display: grid; gap: 2px; }
+
+/* A client card slides left over its Sil button. */
+.swipe-row {
+  position: relative;
+  margin: 10px 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.swipe-row .client-item {
+  position: relative;
+  margin: 0;
+  transition: transform 0.25s var(--ease);
+}
+.swipe-row .client-item.open { transform: translateX(-96px); }
+.swipe-delete {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 96px;
+  border: 0;
+  border-radius: 0;
+  background: var(--heart);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+}
+button.danger {
+  margin-top: 18px;
+  background: #fff;
+  color: var(--heart);
+  border: 1px solid var(--heart);
+}
 .client-item small { color: var(--purple-500); font-size: 0.85rem; }
 .owe-badge {
   background: #fde7ef;
@@ -537,6 +568,12 @@ button.download { background: var(--heart); }
 .screen.enter .client-item:nth-child(2) { animation-delay: 0.05s; }
 .screen.enter .client-item:nth-child(3) { animation-delay: 0.1s; }
 .screen.enter .client-item:nth-child(4) { animation-delay: 0.15s; }
+.screen.enter .swipe-row { animation: rise 0.45s var(--ease) both; }
+.screen.enter .swipe-row:nth-child(2) { animation-delay: 0.05s; }
+.screen.enter .swipe-row:nth-child(3) { animation-delay: 0.1s; }
+.screen.enter .swipe-row:nth-child(4) { animation-delay: 0.15s; }
+/* The row animates instead, so the card's own transform stays free for swiping. */
+.screen.enter .swipe-row .client-item { animation: none; }
 .screen.enter .card:nth-child(2) { animation-delay: 0.06s; }
 .screen.enter .card:nth-child(3) { animation-delay: 0.12s; }
 .screen.enter .card:nth-child(4) { animation-delay: 0.18s; }

@@ -66,6 +66,9 @@ export async function startUi(el) {
   root.addEventListener('submit', onSubmit);
   root.addEventListener('touchstart', onTouchStart, { passive: true });
   root.addEventListener('touchend', onTouchEnd, { passive: true });
+  root.addEventListener('touchstart', onSwipeStart, { passive: true });
+  root.addEventListener('touchmove', onSwipeMove, { passive: true });
+  root.addEventListener('touchend', onSwipeEnd, { passive: true });
   await reload();
   // The reminder is checked on open, every minute while open, and when the app comes back to the front.
   checkReminder();
@@ -79,7 +82,7 @@ async function reload() {
   [state.clients, state.sessions, state.series] = await Promise.all(
     ['clients', 'sessions', 'series'].map(getAll),
   );
-  if (!state.programClientId) state.programClientId = state.clients[0]?.id ?? NEW_CLIENT;
+  if (!state.programClientId) state.programClientId = activeClients()[0]?.id ?? NEW_CLIENT;
   await generateSessions();
   await removeExtraSeries();
   render();
@@ -165,6 +168,11 @@ function esc(value) {
   }[c]));
 }
 
+// A deleted client is only hidden: its past sessions and payments still count in the summary and the debts.
+function activeClients() {
+  return state.clients.filter((c) => !c.deleted);
+}
+
 function clientName(id) {
   return state.clients.find((c) => c.id === id)?.name ?? '—';
 }
@@ -244,8 +252,8 @@ function monthStrip() {
 
 // A one-off visit: a session that is not part of a weekly program. It counts in the summary like any other session.
 function extraSessionForm() {
-  if (!state.clients.length) return '';
-  const options = state.clients.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  if (!activeClients().length) return '';
+  const options = activeClients().map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
   return `
     <details class="card extra">
       <summary>＋ Ek seans ekle</summary>
@@ -265,7 +273,7 @@ function extraSessionForm() {
 // The client picker also adds new clients. A new client starts with every field empty.
 function programScreen() {
   const selected = state.programClientId;
-  const options = state.clients
+  const options = activeClients()
     .map((c) => `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`)
     .join('');
   const client = state.clients.find((c) => c.id === selected);
@@ -347,7 +355,7 @@ function sessionsScreen() {
           : `<button type="button" class="wide" data-action="reschedule">Yeniden planla</button>`)
       : '';
     return `
-      <article class="card session ${status === 'cancelled' ? 'cancelled' : ''}" data-session="${esc(s.id)}">
+      <article class="card session ${status === 'cancelled' ? 'cancelled' : ''}" data-session="${esc(s.id)}" data-day="${toKey(new Date(s.start))}">
         <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtRange(s))}</span></div>
         ${status === 'cancelled' ? '<p class="cancel-mark">✕ İptal</p>' : ''}
         <label>Ücret (₺) <input type="number" min="0" step="1" inputmode="numeric" data-field="fee" value="${esc(s.fee ?? 0)}"></label>
@@ -439,6 +447,31 @@ function changeProgram(clientId, update) {
   return programQueue;
 }
 
+// Deleting keeps the client's record, marked deleted, so past sessions, payments and debts stay in the summary.
+// The weekly program stops today, and planned sessions from today on that are not paid are removed.
+async function deleteClient(id) {
+  const client = state.clients.find((c) => c.id === id);
+  if (!client) return;
+  const ok = confirm(`${client.name} silinsin mi?\n\nGeçmiş seansları ve aldığınız ödemeler özette kalır. Bugün ve sonrasındaki planlı seansları silinir.`);
+  if (!ok) {
+    root.querySelector('.client-item.open')?.classList.remove('open');
+    return;
+  }
+  await cancelActiveSeries(id);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  for (const s of state.sessions) {
+    if (s.clientId === id && s.status === 'planned' && payStateOf(s) !== 'paid' && new Date(s.start) >= startOfToday) {
+      await remove('sessions', s.id);
+    }
+  }
+  await put('clients', { ...client, deleted: toKey(new Date()) });
+  if (state.programClientId === id) state.programClientId = '';
+  if (state.actClientId === id) state.actClientId = '';
+  state.clientId = '';
+  return reload();
+}
+
 async function saveClient(clientId, changes) {
   const client = state.clients.find((c) => c.id === clientId);
   await put('clients', { ...client, ...changes });
@@ -494,13 +527,18 @@ async function onClick(e) {
     state.tab = tab.dataset.tab;
     state.notice = '';
     state.clientId = '';
-    return render();
+    render();
+    return state.tab === 'sessions' ? scrollToToday() : window.scrollTo(0, 0);
   }
 
   const action = e.target.closest('[data-action]');
   if (!action) return;
 
+  if (action.dataset.action === 'delete-client') return deleteClient(action.dataset.id);
   if (action.dataset.action === 'open-client') {
+    // A tap on a swiped card closes it, and the tap that ends a swipe opens nothing.
+    if (Date.now() - swipedAt < 400) return;
+    if (action.classList.contains('open')) return action.classList.remove('open');
     state.clientId = action.dataset.id;
     return render();
   }
@@ -510,7 +548,8 @@ async function onClick(e) {
   }
   if (action.dataset.action === 'pick-month') {
     state.month = action.dataset.month;
-    return render();
+    render();
+    return scrollToToday();
   }
   const actClient = e.target.closest('[data-act-client]')?.dataset.actClient;
   if (actClient && action.dataset.action === 'toggle-area') {
@@ -531,18 +570,21 @@ async function onClick(e) {
 
   if (action.dataset.action === 'this-month') {
     state.month = toKey(new Date()).slice(0, 7);
-    return render();
+    render();
+    return scrollToToday();
   }
   if (action.dataset.action === 'toggle-reminder') return toggleReminder();
   if (action.dataset.action === 'test-reminder') return testReminder();
 
   if (action.dataset.action === 'prev-month') {
     state.month = shiftMonth(state.month, -1);
-    return render();
+    render();
+    return scrollToToday();
   }
   if (action.dataset.action === 'next-month') {
     state.month = shiftMonth(state.month, 1);
-    return render();
+    render();
+    return scrollToToday();
   }
 
   const card = e.target.closest('[data-session]');
@@ -591,6 +633,53 @@ function onTouchEnd(e) {
   if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
   state.month = shiftMonth(state.month, dx < 0 ? 1 : -1);
   render();
+  if (state.tab === 'sessions') scrollToToday();
+}
+
+// Swiping a client card to the left uncovers its Sil button. Only the client list has these cards.
+const SWIPE_OPEN = 96;
+let swipe = null;
+let swipedAt = 0;
+
+function onSwipeStart(e) {
+  const el = e.target.closest('.swipe-row .client-item');
+  for (const open of root.querySelectorAll('.client-item.open')) if (open !== el) open.classList.remove('open');
+  if (!el) return;
+  const t = e.touches[0];
+  swipe = { el, x: t.clientX, y: t.clientY, dx: 0, base: el.classList.contains('open') ? -SWIPE_OPEN : 0, sideways: null };
+}
+
+function onSwipeMove(e) {
+  if (!swipe) return;
+  const t = e.touches[0];
+  const dx = t.clientX - swipe.x;
+  const dy = t.clientY - swipe.y;
+  // The first clear movement decides: sideways drags the card, up and down scrolls the page.
+  if (swipe.sideways === null && Math.hypot(dx, dy) > 8) swipe.sideways = Math.abs(dx) > Math.abs(dy);
+  if (!swipe.sideways) return;
+  swipe.dx = dx;
+  swipe.el.style.transition = 'none';
+  swipe.el.style.transform = `translateX(${Math.min(0, Math.max(-SWIPE_OPEN * 1.3, swipe.base + dx))}px)`;
+}
+
+function onSwipeEnd() {
+  if (!swipe) return;
+  const { el, sideways, base, dx } = swipe;
+  swipe = null;
+  if (!sideways) return;
+  swipedAt = Date.now();
+  el.style.transition = '';
+  el.style.transform = '';
+  el.classList.toggle('open', base + dx < -SWIPE_OPEN / 2);
+}
+
+// Seanslar opens at today: the first session of today or later in the month shown, if the month shown is this one.
+function scrollToToday() {
+  const today = toKey(new Date());
+  if (state.tab !== 'sessions' || state.clientId || state.month !== today.slice(0, 7)) return window.scrollTo(0, 0);
+  const first = [...root.querySelectorAll('.card.session[data-day]')].find((el) => el.dataset.day >= today);
+  if (!first) return window.scrollTo(0, 0);
+  window.scrollTo({ top: first.getBoundingClientRect().top + window.scrollY - 16, behavior: 'instant' });
 }
 
 // Typing digits fills in the colon: 0900 shows as 09:00 while the user types.
@@ -737,14 +826,14 @@ function writeAuthor(value) {
 }
 
 function activitiesScreen() {
-  if (!state.clients.length) {
+  if (!activeClients().length) {
     return '<h2>Ev Aktiviteleri</h2><p class="empty">Önce Program sekmesinden bir danışan ekleyin.</p>';
   }
-  const client = state.clients.find((c) => c.id === state.actClientId) ?? state.clients[0];
+  const client = activeClients().find((c) => c.id === state.actClientId) ?? activeClients()[0];
   const id = esc(client.id);
   const profile = profileOf(client);
   const program = homeProgramOf(client);
-  const options = state.clients
+  const options = activeClients()
     .map((c) => `<option value="${esc(c.id)}" ${c.id === client.id ? 'selected' : ''}>${esc(c.name)}</option>`)
     .join('');
   const chip = (action, item, on, kind) => `
@@ -873,18 +962,21 @@ function clientsScreen() {
 function clientList() {
   const q = state.search.trim().toLocaleLowerCase('tr-TR');
   const debtors = new Map(debtorsOf({ clients: state.clients, sessions: state.sessions }).map((d) => [d.clientId, d]));
-  const shown = state.clients.filter((c) => c.name.toLocaleLowerCase('tr-TR').includes(q));
+  const shown = activeClients().filter((c) => c.name.toLocaleLowerCase('tr-TR').includes(q));
   if (!shown.length) {
-    return `<p class="empty">${state.clients.length ? 'Bu isimde danışan yok.' : 'Henüz danışan yok. Program sekmesinden ekleyebilirsiniz.'}</p>`;
+    return `<p class="empty">${activeClients().length ? 'Bu isimde danışan yok.' : 'Henüz danışan yok. Program sekmesinden ekleyebilirsiniz.'}</p>`;
   }
   return shown.map((c) => {
     const debt = debtors.get(c.id);
     const held = state.sessions.filter((s) => s.clientId === c.id && s.status === 'done').length;
     return `
-      <button type="button" class="client-item" data-action="open-client" data-id="${esc(c.id)}">
-        <span><strong>${esc(c.name)}</strong><small>%${roomPctOf(c)} oda payı · ${held} seans</small></span>
-        ${debt ? `<span class="owe-badge">${money(debt.owed)}</span>` : ''}
-      </button>`;
+      <div class="swipe-row">
+        <button type="button" class="swipe-delete" data-action="delete-client" data-id="${esc(c.id)}" tabindex="-1">Sil</button>
+        <button type="button" class="client-item" data-action="open-client" data-id="${esc(c.id)}">
+          <span><strong>${esc(c.name)}</strong><small>%${roomPctOf(c)} oda payı · ${held} seans</small></span>
+          ${debt ? `<span class="owe-badge">${money(debt.owed)}</span>` : ''}
+        </button>
+      </div>`;
   }).join('');
 }
 
@@ -918,7 +1010,8 @@ function clientDetail(id) {
       <div><span>Borç</span><strong>${money(total(owing))}</strong></div>
     </section>
     <h3>Seanslar</h3>
-    ${rows || '<p class="empty">Henüz seans yok.</p>'}`;
+    ${rows || '<p class="empty">Henüz seans yok.</p>'}
+    ${client.deleted ? '' : `<button type="button" class="wide danger" data-action="delete-client" data-id="${esc(client.id)}">Danışanı sil</button>`}`;
 }
 
 function sessionStateText(s) {
