@@ -287,6 +287,7 @@ button:active { transform: scale(0.96); }
 
 .total p { font-size: 1.05rem; }
 .total strong { color: var(--purple-700); }
+.month-net small { display: block; margin-top: 6px; color: var(--purple-500); font-size: 0.85rem; }
 
 .client-sum summary {
   display: flex;

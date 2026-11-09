@@ -1,5 +1,5 @@
 import { getAll, put, remove } from './db.js';
-import { computeSummary, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
+import { computeSummary, monthNetsOf, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
 import { expandSeries, extraSeriesIds, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
 import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer } from './reminder.js';
@@ -41,6 +41,7 @@ const state = {
   clients: [],
   sessions: [],
   series: [],
+  payments: [],
   programClientId: '',
   month: toKey(new Date()).slice(0, 7),
   rescheduleId: '',
@@ -80,8 +81,8 @@ export async function startUi(el) {
 }
 
 async function reload() {
-  [state.clients, state.sessions, state.series] = await Promise.all(
-    ['clients', 'sessions', 'series'].map(getAll),
+  [state.clients, state.sessions, state.series, state.payments] = await Promise.all(
+    ['clients', 'sessions', 'series', 'payments'].map(getAll),
   );
   if (!state.programClientId) state.programClientId = activeClients()[0]?.id ?? NEW_CLIENT;
   await generateSessions();
@@ -377,7 +378,7 @@ function sessionsScreen() {
 }
 
 function summaryScreen() {
-  const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month });
+  const t = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month, monthNets: monthNetsOf(state.payments) });
   // Tapping a client's name opens the breakdown: sessions, what was received, the room share paid, and what is left.
   const perClient = t.perClient
     .filter((c) => c.sessionCount)
@@ -397,8 +398,19 @@ function summaryScreen() {
     <section class="card total">
       <p>Net toplam <strong>${money(t.overall.net)}</strong></p>
     </section>
+    ${monthNetCard(t.overall.manualNet)}
     ${trendChart()}
-    ${perClient || '<p class="empty">Bu ayda gerçekleşen seans yok.</p>'}`;
+    ${perClient || (t.overall.manualNet ? '' : '<p class="empty">Bu ayda gerçekleşen seans yok.</p>')}`;
+}
+
+// For a past month whose sessions were never entered: one amount, with the room share already taken out.
+function monthNetCard(net) {
+  if (state.month >= toKey(new Date()).slice(0, 7)) return '';
+  return `
+    <label class="card month-net">Toplu net kazanç (₺)
+      <input type="number" min="0" step="1" inputmode="numeric" placeholder="Oda payı düşülmüş tutar" data-field="monthNet" value="${net || ''}">
+      <small>Yazdığınız tutar oda payı düşülmeden bu ayın net toplamına ve grafiğe eklenir. Silmek için boş bırakın.</small>
+    </label>`;
 }
 
 // Stops a client's weekly series from today on. Completed, cancelled and paid sessions are kept.
@@ -724,6 +736,14 @@ async function onChange(e) {
     return updateHomeProgram(actClient, (p) => ({ ...p, intro: e.target.value }));
   }
 
+  if (field === 'monthNet') {
+    const id = `net_${state.month}`;
+    const net = Math.max(0, Math.round(Number(e.target.value)) || 0);
+    if (net) await put('payments', { id, kind: 'monthNet', month: state.month, net });
+    else await remove('payments', id);
+    return reload();
+  }
+
   if (field === 'pick') {
     state.programClientId = e.target.value;
     state.notice = '';
@@ -1041,11 +1061,12 @@ function trendChart() {
   const months = monthlyNet({
     clients: state.clients,
     sessions: state.sessions,
+    monthNets: monthNetsOf(state.payments),
     endMonth: toKey(new Date()).slice(0, 7),
     count: 12,
   });
   const max = Math.max(1, ...months.map((m) => m.net));
-  const selected = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month }).overall.net;
+  const selected = computeSummary({ clients: state.clients, sessions: state.sessions, month: state.month, monthNets: monthNetsOf(state.payments) }).overall.net;
   const bars = months.map((m, i) => {
     const height = Math.max(4, Math.round((m.net / max) * 100));
     return `
