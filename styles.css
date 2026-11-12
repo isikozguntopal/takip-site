@@ -552,6 +552,18 @@ button.download { background: var(--heart); }
 }
 .extra summary::-webkit-details-marker { display: none; }
 .extra form { display: grid; gap: 10px; margin-top: 12px; }
+.eval-tag {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: var(--purple-700);
+  background: #efe4fb;
+  border-radius: 999px;
+  padding: 2px 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.eval-card p { margin: 0 0 10px; }
 .reminder p { margin: 0; }
 
 @keyframes grow {

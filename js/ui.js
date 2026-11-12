@@ -84,7 +84,9 @@ async function reload() {
   [state.clients, state.sessions, state.series, state.payments] = await Promise.all(
     ['clients', 'sessions', 'series', 'payments'].map(getAll),
   );
-  if (!state.programClientId) state.programClientId = activeClients()[0]?.id ?? NEW_CLIENT;
+  if (!state.programClientId) {
+    state.programClientId = (activeClients().find((c) => !c.evaluation) ?? activeClients()[0])?.id ?? NEW_CLIENT;
+  }
   await generateSessions();
   await removeExtraSeries();
   render();
@@ -117,10 +119,15 @@ async function removeExtraSeries() {
 async function generateSessions() {
   const horizon = toKey(new Date(Date.now() + HORIZON_DAYS * DAY_MS));
   const known = new Set(state.sessions.map((s) => s.id));
+  // A child who becomes regular on the weekday of their evaluation gets no weekly session on the evaluation day itself.
+  const evaluationDays = new Set(state.sessions
+    .filter((s) => s.kind === 'evaluation')
+    .map((s) => `${s.clientId}_${toKey(new Date(s.start))}`));
   const created = [];
   for (const series of state.series) {
     for (const occurrence of expandSeries(series, series.startDate, horizon)) {
-      if (!known.has(occurrence.id)) created.push(occurrence);
+      const day = `${occurrence.clientId}_${toKey(new Date(occurrence.start))}`;
+      if (!known.has(occurrence.id) && !evaluationDays.has(day)) created.push(occurrence);
     }
   }
   for (const session of created) await put('sessions', session);
@@ -272,18 +279,46 @@ function extraSessionForm() {
     </details>`;
 }
 
+// An evaluation is a new child's first, one-off visit. It makes a client marked as in evaluation, with no weekly
+// program, and one session whose fee is typed in. Choosing days in Program later makes them a regular client.
+function evaluationForm() {
+  return `
+    <details class="card extra">
+      <summary>＋ Değerlendirme ekle</summary>
+      <form data-form="evaluation">
+        <label>Danışanın adı <input name="name" required></label>
+        <label>Oda payı (%) <input name="pct" type="number" min="0" max="100" step="1" inputmode="numeric" value="${esc(usualRoomPct())}"></label>
+        <label>Tarih <input type="date" name="date" value="${toKey(new Date())}" required></label>
+        <div class="day-fields">
+          <label>Saat <input name="time" data-field="extraTime" inputmode="numeric" placeholder="09:00" maxlength="5" required></label>
+          <label>Süre (dk) <input name="duration" type="number" min="5" step="5" inputmode="numeric" value="${DEFAULT_DURATION}"></label>
+          <label>Ücret (₺) <input name="fee" type="number" min="0" step="1" inputmode="numeric" required></label>
+        </div>
+        <button type="submit" class="wide">Değerlendirmeyi ekle</button>
+      </form>
+    </details>`;
+}
+
+// The room share most clients have, offered for a new evaluation.
+function usualRoomPct() {
+  const counts = new Map();
+  for (const c of activeClients()) if (c.roomPct != null && c.roomPct !== '') counts.set(c.roomPct, (counts.get(c.roomPct) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+}
+
 // The client picker also adds new clients. A new client starts with every field empty.
 function programScreen() {
   const selected = state.programClientId;
-  const options = activeClients()
-    .map((c) => `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`)
-    .join('');
+  const option = (c) => `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`;
+  const options = activeClients().filter((c) => !c.evaluation).map(option).join('');
+  const evaluated = activeClients().filter((c) => c.evaluation).map(option).join('');
   const client = state.clients.find((c) => c.id === selected);
   return `
     <h2>Program</h2>
     <label class="card">Danışan
       <select data-field="pick">
         ${options}
+        ${evaluated ? `<optgroup label="Değerlendirmede">${evaluated}</optgroup>` : ''}
         <option value="${NEW_CLIENT}" ${selected === NEW_CLIENT ? 'selected' : ''}>+ Yeni danışan</option>
       </select>
     </label>
@@ -320,6 +355,7 @@ function programCard(client) {
     <section class="card program" data-client="${esc(client.id)}">
       <h3>${esc(client.name)}</h3>
       <label>Oda payı (%) <input type="number" min="0" max="100" step="1" inputmode="numeric" data-field="pct" value="${esc(client.roomPct ?? '')}"></label>
+      ${client.evaluation ? '<p class="notice">Değerlendirmeye geldi. Gelmeye devam edecekse günlerini seçin; düzenli danışan olur.</p>' : ''}
       <p class="hint">Gelen günlere dokunun. Seçilen günün altına saati, süreyi ve ücreti yazın. Her değişiklik otomatik kaydedilir.</p>
       <div class="week">${days}</div>
     </section>`;
@@ -358,7 +394,7 @@ function sessionsScreen() {
       : '';
     return `
       <article class="card session ${status === 'cancelled' ? 'cancelled' : ''}" data-session="${esc(s.id)}" data-day="${toKey(new Date(s.start))}">
-        <div class="row"><strong>${esc(clientName(s.clientId))}</strong><span>${esc(fmtRange(s))}</span></div>
+        <div class="row"><strong>${esc(clientName(s.clientId))}${s.kind === 'evaluation' ? ' <em class="eval-tag">Değerlendirme</em>' : ''}</strong><span>${esc(fmtRange(s))}</span></div>
         ${status === 'cancelled' ? '<p class="cancel-mark">✕ İptal</p>' : ''}
         <label>Ücret (₺) <input type="number" min="0" step="1" inputmode="numeric" data-field="fee" value="${esc(s.fee ?? 0)}"></label>
         <div class="status-buttons">
@@ -373,6 +409,7 @@ function sessionsScreen() {
     <h2>Seanslar</h2>
     ${monthStrip()}
     ${extraSessionForm()}
+    ${evaluationForm()}
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
@@ -446,6 +483,8 @@ async function saveProgram(clientId, days) {
       endDate: null,
     });
   }
+  const client = state.clients.find((c) => c.id === clientId);
+  if (client?.evaluation && days.length) await put('clients', { ...client, evaluation: false });
   state.notice = '';
   return reload();
 }
@@ -548,6 +587,15 @@ async function onClick(e) {
   if (!action) return;
 
   if (action.dataset.action === 'delete-client') return deleteClient(action.dataset.id);
+  // Opens Program on the evaluated client, where choosing days makes them regular.
+  if (action.dataset.action === 'make-regular') {
+    state.programClientId = action.dataset.id;
+    state.tab = 'program';
+    state.clientId = '';
+    state.notice = '';
+    render();
+    return window.scrollTo(0, 0);
+  }
   if (action.dataset.action === 'open-client') {
     // A tap on a swiped card closes it, and the tap that ends a swipe opens nothing.
     if (Date.now() - swipedAt < 400) return;
@@ -997,7 +1045,7 @@ function clientList() {
       <div class="swipe-row">
         <button type="button" class="swipe-delete" data-action="delete-client" data-id="${esc(c.id)}" tabindex="-1">Sil</button>
         <button type="button" class="client-item" data-action="open-client" data-id="${esc(c.id)}">
-          <span><strong>${esc(c.name)}</strong><small>%${roomPctOf(c)} oda payı · ${held} seans</small></span>
+          <span><strong>${esc(c.name)}</strong><small>%${roomPctOf(c)} oda payı · ${held} seans${c.evaluation ? ' · Değerlendirmede' : ''}</small></span>
           ${debt ? `<span class="owe-badge">${money(debt.owed)}</span>` : ''}
         </button>
       </div>`;
@@ -1020,11 +1068,17 @@ function clientDetail(id) {
   const rows = sessions.map((s) => `
     <article class="card session-row">
       <div class="row"><strong>${esc(fmtRange(s))}</strong></div>
-      <p>${esc(sessionStateText(s))}</p>
+      <p>${s.kind === 'evaluation' ? '<em class="eval-tag">Değerlendirme</em> ' : ''}${esc(sessionStateText(s))}</p>
     </article>`).join('');
   return `
     <button type="button" class="back" data-action="close-client">‹ Danışanlarım</button>
     <h2>${esc(client.name)}</h2>
+    ${client.evaluation && !client.deleted
+      ? `<section class="card eval-card">
+           <p>Değerlendirmeye geldi, henüz haftalık programı yok.</p>
+           <button type="button" class="wide" data-action="make-regular" data-id="${esc(client.id)}">Düzenli programa al</button>
+         </section>`
+      : ''}
     <section class="card" data-client="${esc(client.id)}">
       <label>Oda payı (%) <input type="number" min="0" max="100" step="1" inputmode="numeric" data-field="pct" value="${esc(client.roomPct ?? '')}"></label>
     </section>
@@ -1182,35 +1236,57 @@ async function testReminder() {
 // Adds a one-off session. It is saved as planned; marking it held and paid works the same as for weekly sessions.
 async function addExtraSession(form) {
   const data = new FormData(form);
+  const session = oneOffSession(data, String(data.get('clientId')));
+  if (!session) return render();
+  await put('sessions', session);
+  state.notice = '';
+  state.month = monthOfIso(session.start);
+  return reload();
+}
+
+async function addEvaluation(form) {
+  const data = new FormData(form);
+  const name = String(data.get('name') ?? '').trim();
+  if (!name) return;
+  const id = crypto.randomUUID();
+  const session = oneOffSession(data, id);
+  if (!session) return render();
+  const pct = data.get('pct') === '' ? null : Math.min(100, Math.max(0, Number(data.get('pct')) || 0));
+  await put('clients', { id, name, roomPct: pct, evaluation: true });
+  await put('sessions', { ...session, kind: 'evaluation' });
+  state.notice = '';
+  state.month = monthOfIso(session.start);
+  return reload();
+}
+
+// A session outside the weekly program, from the date, time, length and fee of a form. Null when the time is unreadable.
+function oneOffSession(data, clientId) {
   const time = normalizeTime(data.get('time'));
   if (time === null) {
     state.notice = 'Saati 09:30 biçiminde yazın.';
-    return render();
+    return null;
   }
   const [y, m, d] = String(data.get('date')).split('-').map(Number);
   const [hh, mm] = time.split(':').map(Number);
   const start = new Date(y, m - 1, d, hh, mm);
   const duration = Math.max(5, Number(data.get('duration')) || DEFAULT_DURATION);
-  const end = new Date(start.getTime() + duration * 60000);
-  await put('sessions', {
+  return {
     id: crypto.randomUUID(),
-    clientId: String(data.get('clientId')),
+    clientId,
     start: start.toISOString(),
-    end: end.toISOString(),
+    end: new Date(start.getTime() + duration * 60000).toISOString(),
     status: 'planned',
     fee: Math.max(0, Number(data.get('fee')) || 0),
     payState: 'none',
     payDate: '',
-  });
-  state.notice = '';
-  state.month = monthOfIso(start.toISOString());
-  return reload();
+  };
 }
 
 async function onSubmit(e) {
   e.preventDefault();
   const form = e.target;
   if (form.dataset.form === 'extraSession') return addExtraSession(form);
+  if (form.dataset.form === 'evaluation') return addEvaluation(form);
   if (form.dataset.form !== 'newClient') return;
 
   const name = String(new FormData(form).get('name') ?? '').trim();
