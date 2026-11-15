@@ -1,5 +1,5 @@
-// The evening reminder about tomorrow's sessions. Everything here runs on the phone: the app only shows a notification
-// while it is open or when it is opened after 21:00. Nothing is sent to a server.
+// The evening reminder about tomorrow's sessions. The reminder server sends it at 21:00 only on evenings before a session
+// day; the only thing it learns from the phone is which dates have a session.
 export const REMIND_HOUR = 21;
 const KEY = 'takip-reminder';
 
@@ -45,7 +45,36 @@ export function writePrefs(prefs) {
   }
 }
 
-// The server only needs the phone's push address. Nothing about clients or sessions leaves the phone.
+// The dates, 'YYYY-MM-DD' in local time, that have a session that is not cancelled, from fromKey for `days` days.
+// These dates are all the server gets: no names, times or fees.
+export function sessionDays(sessions, fromKey, days = 120) {
+  const [y, m, d] = fromKey.split('-').map(Number);
+  const last = new Date(y, m - 1, d + days);
+  const key = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const lastKey = key(last);
+  const found = new Set();
+  for (const s of sessions) {
+    if (s.status === 'cancelled') continue;
+    const day = key(new Date(s.start));
+    if (day >= fromKey && day <= lastKey) found.add(day);
+  }
+  return [...found].sort();
+}
+
+// Tells the server the session dates, so it reminds only the evening before a session day.
+export async function sendSessionDays(config, days) {
+  const registration = await navigator.serviceWorker?.ready;
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return false;
+  const response = await fetch(`${config.pushServer}/days`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint, days }),
+  });
+  return response.ok;
+}
+
+// The server needs the phone's push address and the session dates. Nothing about clients leaves the phone.
 export function serverReady(config) {
   return Boolean(config.pushServer) && !config.pushServer.startsWith('REPLACE') && Boolean(config.vapidPublicKey);
 }

@@ -2,7 +2,7 @@ import { getAll, put, remove } from './db.js';
 import { computeSummary, monthNetsOf, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
 import { expandSeries, extraSeriesIds, toKey } from './schedule.js';
 import { dailyMotivation } from './motivation.js';
-import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer } from './reminder.js';
+import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer, sessionDays, sendSessionDays } from './reminder.js';
 import { CONFIG } from '../config.js';
 import { AREAS, FLAGS, ACTIVITIES, activitiesFor, adaptationsFor, areaLabel } from './activities.js';
 import { illustration } from './illustrations.js';
@@ -90,6 +90,7 @@ async function reload() {
   await generateSessions();
   await removeExtraSeries();
   render();
+  syncSessionDays();
 }
 
 // Drops a weekday that was written twice, and the sessions it doubled. When only the doubled copy has a status or a
@@ -1153,7 +1154,7 @@ function meScreen() {
     ${list || '<p class="empty">Ödenmemiş seans yok. Harika!</p>'}
     <h3>Hatırlatma</h3>
     <section class="card reminder">
-      <p>Her akşam 21:00'de yarının seanslarını hatırlatır. Ödemesi bekleyen danışanlar bildirimde ayrıca yazılır.</p>
+      <p>Ertesi gün seansınız varsa akşam 21:00'de hatırlatır; seansınız olmayan akşamlar bildirim gelmez.</p>
       ${reminderControls()}
       ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     </section>`;
@@ -1195,6 +1196,23 @@ async function checkReminder() {
   await showReminder(tomorrowMessage());
 }
 
+// Keeps the server's list of session dates current, so the 21:00 reminder comes only on the evening before a session day.
+// Runs after every change and sends only when the dates changed.
+let sentDays = null;
+async function syncSessionDays() {
+  if (!serverReady(CONFIG) || !readPrefs().enabled) return;
+  const days = sessionDays(state.sessions, toKey(new Date()));
+  const key = days.join(',');
+  if (key === sentDays) return;
+  sentDays = key;
+  try {
+    if (!await sendSessionDays(CONFIG, days)) sentDays = null;
+  } catch {
+    // Offline: the next change or the next opening sends them.
+    sentDays = null;
+  }
+}
+
 async function toggleReminder() {
   const prefs = readPrefs();
   if (prefs.enabled) {
@@ -1216,12 +1234,14 @@ async function toggleReminder() {
   if (serverReady(CONFIG)) {
     try {
       await subscribeToServer(CONFIG);
+      sentDays = null;
+      await syncSessionDays();
     } catch {
       state.notice = 'Bildirim sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.';
       return render();
     }
   }
-  state.notice = "Bildirimler açıldı. Her akşam 21:00'de yarının seanslarını hatırlatacağım.";
+  state.notice = "Bildirimler açıldı. Ertesi gün seansınız olan akşamlarda 21:00'de hatırlatacağım.";
   return render();
 }
 
