@@ -28,6 +28,7 @@ const TABS = [
   ['me', 'Ben'],
 ];
 const AUTHOR_KEY = 'takip-pdf-author';
+const VIEW_KEY = 'takip-session-view';
 // How often the open app checks whether the evening reminder is due.
 const REMINDER_CHECK_MS = 60000;
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
@@ -52,6 +53,9 @@ const state = {
   // { clientId, status: 'working' | 'ready' | 'error', name, error }
   pdf: null,
   notice: '',
+  // Seanslar shows a list of the month, or a calendar with the sessions of one day below it.
+  sessionView: readView(),
+  calDay: '',
 };
 // The last PDF made, kept until the user downloads it or changes the client's program.
 let pdfBlob = null;
@@ -366,7 +370,74 @@ function sessionsScreen() {
   const inMonth = [...state.sessions]
     .filter((s) => monthOfIso(s.start) === state.month)
     .sort((a, b) => a.start.localeCompare(b.start));
-  const items = inMonth.map((s) => {
+  const calendar = state.sessionView === 'calendar';
+  const day = calendar ? shownDay(inMonth) : '';
+  const shown = calendar ? inMonth.filter((s) => toKey(new Date(s.start)) === day) : inMonth;
+  const items = shown.map(sessionCard).join('');
+  return `
+    <h2>Seanslar</h2>
+    ${monthStrip()}
+    <div class="view-switch" role="group" aria-label="Görünüm">
+      <button type="button" data-action="session-view" data-value="list" aria-pressed="${!calendar}" class="${calendar ? '' : 'active'}">☰ Liste</button>
+      <button type="button" data-action="session-view" data-value="calendar" aria-pressed="${calendar}" class="${calendar ? 'active' : ''}">▦ Takvim</button>
+    </div>
+    ${calendar ? monthGrid(inMonth, day) : ''}
+    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
+    ${calendar
+      ? `<h3 class="day-title">${esc(dayLabel(day))}</h3>
+         ${items || '<p class="empty">Bu günde seans yok.</p>'}
+         ${extraSessionForm()}
+         ${evaluationForm()}`
+      : `${extraSessionForm()}
+         ${evaluationForm()}
+         ${items || '<p class="empty">Bu ayda seans yok.</p>'}`}`;
+}
+
+// The day the calendar shows below the grid: the one tapped, else today in this month, else the month's first session day.
+function shownDay(inMonth) {
+  if (state.calDay.startsWith(state.month)) return state.calDay;
+  const today = toKey(new Date());
+  if (today.startsWith(state.month)) return today;
+  return inMonth.length ? toKey(new Date(inMonth[0].start)) : `${state.month}-01`;
+}
+
+// "16 Kasım Pazartesi"
+function dayLabel(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' });
+}
+
+// The month as a Monday-first grid. Each day shows a dot per session: purple planned, green held, red cancelled.
+function monthGrid(inMonth, selected) {
+  const [y, m] = state.month.split('-').map(Number);
+  const today = toKey(new Date());
+  const byDay = new Map();
+  for (const s of inMonth) {
+    const key = toKey(new Date(s.start));
+    byDay.set(key, [...(byDay.get(key) ?? []), s]);
+  }
+  const blanks = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const cells = Array.from({ length: blanks }, () => '<span class="cal-cell blank"></span>');
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${state.month}-${String(d).padStart(2, '0')}`;
+    const list = byDay.get(key) ?? [];
+    const dots = list.slice(0, 4).map((s) => `<i class="dot ${s.status}"></i>`).join('');
+    const more = list.length > 4 ? `<small>+${list.length - 4}</small>` : '';
+    const cls = ['cal-cell', key === today ? 'today' : '', key === selected ? 'selected' : '', list.length ? 'busy' : ''].join(' ');
+    cells.push(`
+      <button type="button" class="${cls}" data-action="pick-day" data-day="${key}" aria-pressed="${key === selected}" aria-label="${esc(dayLabel(key))}, ${list.length} seans">
+        <span>${d}</span><span class="dots">${dots}${more}</span>
+      </button>`);
+  }
+  return `
+    <section class="card calendar">
+      <div class="cal-head">${WEEKDAYS.map(([, l]) => `<span>${l}</span>`).join('')}</div>
+      <div class="cal-grid">${cells.join('')}</div>
+    </section>`;
+}
+
+function sessionCard(s) {
     const status = s.status;
     const pay = payStateOf(s);
     const date = payDateOf(s);
@@ -405,14 +476,6 @@ function sessionsScreen() {
         ${reschedule}
         ${payControls}
       </article>`;
-  }).join('');
-  return `
-    <h2>Seanslar</h2>
-    ${monthStrip()}
-    ${extraSessionForm()}
-    ${evaluationForm()}
-    ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
-    ${items || '<p class="empty">Bu ayda seans yok.</p>'}`;
 }
 
 function summaryScreen() {
@@ -630,8 +693,25 @@ async function onClick(e) {
   if (actClient && action.dataset.action === 'make-pdf') return makePdf(actClient);
   if (action.dataset.action === 'download-pdf') return downloadPdf();
 
+  if (action.dataset.action === 'session-view') {
+    state.sessionView = action.dataset.value;
+    writeView(state.sessionView);
+    render();
+    return scrollToToday();
+  }
+  if (action.dataset.action === 'pick-day') {
+    state.calDay = action.dataset.day;
+    render();
+    // The day's sessions are right below the grid; bring them into view when they start off screen.
+    const title = root.querySelector('.day-title');
+    if (title && title.getBoundingClientRect().top > window.innerHeight * 0.6) {
+      window.scrollTo({ top: title.getBoundingClientRect().top + window.scrollY - 16, behavior: 'smooth' });
+    }
+    return;
+  }
   if (action.dataset.action === 'this-month') {
     state.month = toKey(new Date()).slice(0, 7);
+    state.calDay = '';
     render();
     return scrollToToday();
   }
@@ -742,6 +822,8 @@ function onSwipeEnd() {
 function scrollToToday() {
   const today = toKey(new Date());
   if (state.tab !== 'sessions' || state.clientId || state.month !== today.slice(0, 7)) return window.scrollTo(0, 0);
+  // The calendar opens on today already, so it starts from the top.
+  if (state.sessionView === 'calendar') return window.scrollTo(0, 0);
   const first = [...root.querySelectorAll('.card.session[data-day]')].find((el) => el.dataset.day >= today);
   if (!first) return window.scrollTo(0, 0);
   window.scrollTo({ top: first.getBoundingClientRect().top + window.scrollY - 16, behavior: 'instant' });
@@ -880,6 +962,23 @@ function updateHomeProgram(clientId, change) {
   const client = state.clients.find((c) => c.id === clientId);
   dropPdf(clientId);
   return saveClient(clientId, { homeProgram: change(homeProgramOf(client)) });
+}
+
+// The chosen Seanslar view is remembered on this phone only.
+function readView() {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'calendar' ? 'calendar' : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+function writeView(view) {
+  try {
+    localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // Blocked storage: the view simply resets to the list next time.
+  }
 }
 
 function readAuthor() {
