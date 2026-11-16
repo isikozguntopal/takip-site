@@ -28,7 +28,6 @@ const TABS = [
   ['me', 'Ben'],
 ];
 const AUTHOR_KEY = 'takip-pdf-author';
-const VIEW_KEY = 'takip-session-view';
 // How often the open app checks whether the evening reminder is due.
 const REMINDER_CHECK_MS = 60000;
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
@@ -54,7 +53,7 @@ const state = {
   pdf: null,
   notice: '',
   // Seanslar shows a list of the month, or a calendar with the sessions of one day below it.
-  sessionView: readView(),
+  sessionView: 'calendar',
   calDay: '',
 };
 // The last PDF made, kept until the user downloads it or changes the client's program.
@@ -643,6 +642,11 @@ async function onClick(e) {
     state.tab = tab.dataset.tab;
     state.notice = '';
     state.clientId = '';
+    // Seanslar always opens as the calendar on today.
+    if (state.tab === 'sessions') {
+      state.sessionView = 'calendar';
+      state.calDay = '';
+    }
     render();
     return state.tab === 'sessions' ? scrollToToday() : window.scrollTo(0, 0);
   }
@@ -695,7 +699,6 @@ async function onClick(e) {
 
   if (action.dataset.action === 'session-view') {
     state.sessionView = action.dataset.value;
-    writeView(state.sessionView);
     render();
     return scrollToToday();
   }
@@ -962,23 +965,6 @@ function updateHomeProgram(clientId, change) {
   const client = state.clients.find((c) => c.id === clientId);
   dropPdf(clientId);
   return saveClient(clientId, { homeProgram: change(homeProgramOf(client)) });
-}
-
-// The chosen Seanslar view is remembered on this phone only.
-function readView() {
-  try {
-    return localStorage.getItem(VIEW_KEY) === 'calendar' ? 'calendar' : 'list';
-  } catch {
-    return 'list';
-  }
-}
-
-function writeView(view) {
-  try {
-    localStorage.setItem(VIEW_KEY, view);
-  } catch {
-    // Blocked storage: the view simply resets to the list next time.
-  }
 }
 
 function readAuthor() {
