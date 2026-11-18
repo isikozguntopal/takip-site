@@ -59,9 +59,9 @@ h3 { color: var(--purple-700); margin: 0; font-size: 1.15rem; }
 }
 .motto p {
   margin: 0;
-  font-size: 1rem;
-  line-height: 1.5;
-  font-style: italic;
+  font-size: 1.1rem;
+  line-height: 1.4;
+  font-weight: 600;
   position: relative;
   z-index: 1;
 }

@@ -1,7 +1,7 @@
 import { getAll, put, remove } from './db.js';
 import { computeSummary, monthNetsOf, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
 import { expandSeries, extraSeriesIds, toKey } from './schedule.js';
-import { dailyMotivation } from './motivation.js';
+import { displayName, TITLES } from './profile.js';
 import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer, sessionDays, sendSessionDays } from './reminder.js';
 import { CONFIG } from '../config.js';
 import { AREAS, FLAGS, ACTIVITIES, activitiesFor, adaptationsFor, areaLabel } from './activities.js';
@@ -28,6 +28,7 @@ const TABS = [
   ['me', 'Ben'],
 ];
 const AUTHOR_KEY = 'takip-pdf-author';
+const PROFILE_KEY = 'takip-profile';
 // How often the open app checks whether the evening reminder is due.
 const REMINDER_CHECK_MS = 60000;
 // Sunday is 0 in Date.getDay(), so the week starts on Monday and ends on Sunday.
@@ -155,12 +156,14 @@ function render() {
     ).join('')}</nav>`;
 }
 
-// The daily sentence, shown at the top of every screen.
+// The user's title and name at the top of every screen, once entered on Ben.
 function motto() {
+  const shown = displayName(readProfile());
+  if (!shown) return '';
   return `
     <aside class="motto">
       <span class="heart" aria-hidden="true">♥</span>
-      <p>${esc(dailyMotivation())}</p>
+      <p>${esc(shown)}</p>
     </aside>`;
 }
 
@@ -861,6 +864,11 @@ async function onChange(e) {
     return render();
   }
   if (field === 'actAuthor') return writeAuthor(e.target.value.trim());
+  if (field === 'profileTitle' || field === 'profileName') {
+    const key = field === 'profileTitle' ? 'title' : 'name';
+    writeProfile({ ...readProfile(), [key]: e.target.value.trim() });
+    return render();
+  }
   const actClient = e.target.closest('[data-act-client]')?.dataset.actClient;
   if (actClient && field === 'actNote') {
     const id = e.target.dataset.id;
@@ -980,6 +988,24 @@ function writeAuthor(value) {
     localStorage.setItem(AUTHOR_KEY, value);
   } catch {
     // Storage can be blocked; the name is then simply asked again next time.
+  }
+}
+
+// Title and name live on this phone only.
+function readProfile() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? '{}');
+    return { title: String(p.title ?? ''), name: String(p.name ?? '') };
+  } catch {
+    return { title: '', name: '' };
+  }
+}
+
+function writeProfile(profile) {
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    // Blocked storage: the name is simply not kept.
   }
 }
 
@@ -1233,8 +1259,20 @@ function meScreen() {
       <span><strong>${esc(d.name)}</strong><small>${d.count} seans ödenmedi</small></span>
       <span class="owed"><strong>${money(d.owed)}</strong></span>
     </button>`).join('');
+  const profile = readProfile();
   return `
     <h2>Ben</h2>
+    <h3>Adım</h3>
+    <section class="card profile">
+      <p class="hint">İsterseniz adınızı yazın; her ekranın üstünde görünür. Boş bırakırsanız orada bir şey çıkmaz.</p>
+      <label>Unvan
+        <input data-field="profileTitle" list="title-options" value="${esc(profile.title)}" placeholder="Örn. Uzm. Erg." autocomplete="off">
+      </label>
+      <datalist id="title-options">${TITLES.map((t) => `<option value="${esc(t)}"></option>`).join('')}</datalist>
+      <label>Ad Soyad
+        <input data-field="profileName" value="${esc(profile.name)}" placeholder="Adınız ve soyadınız" autocomplete="name">
+      </label>
+    </section>
     <h3>Borçlular</h3>
     ${list || '<p class="empty">Ödenmemiş seans yok. Harika!</p>'}
     <h3>Hatırlatma</h3>
