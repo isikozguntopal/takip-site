@@ -573,6 +573,19 @@ async function saveProgram(clientId, days) {
   return reload();
 }
 
+// Changing a day's time, length or fee on that very day, after today's session was marked, leaves today's session as
+// it is: the change is for the following weeks. The user is told so and can take the change back.
+function confirmSameDayChange(clientId, w) {
+  const now = new Date();
+  if (now.getDay() !== w) return true;
+  const today = toKey(now);
+  const marked = state.sessions.some((s) => s.clientId === clientId && s.seriesId
+    && seriesDayKey(s) === `${clientId}_${today}`
+    && !(s.status === 'planned' && !s.moved && payStateOf(s) === 'none'));
+  if (!marked) return true;
+  return confirm('Bugünkü seans işaretlendiği için olduğu gibi kalır.\n\nBu değişiklik bundan sonraki seanslar için yapılacak.\n\nTamam: değişikliği kaydet\nİptal: değişikliği geri al');
+}
+
 // Program changes run one at a time, and each reads the days only when its turn comes. Two quick edits (the time,
 // then the fee) used to overlap: both started from the same old days and each wrote its own copy of them.
 let programQueue = Promise.resolve();
@@ -934,6 +947,9 @@ async function onChange(e) {
       if (field === 'fee') value = value === '' ? null : Math.max(0, Number(value) || 0);
 
       const key = field;
+      const before = currentDays(clientId).find((d) => d.w === w);
+      if (before && String(before[key] ?? '') === String(value ?? '')) return;
+      if (!confirmSameDayChange(clientId, w)) return render();
       return changeProgram(clientId, (days) => days.map((d) => (d.w === w ? { ...d, [key]: value } : d)));
     }
     return;
