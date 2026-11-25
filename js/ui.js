@@ -1,6 +1,6 @@
 import { getAll, put, remove } from './db.js';
 import { computeSummary, monthNetsOf, payStateOf, payDateOf, monthOfIso, monthlyNet, debtorsOf, roomPctOf, shiftMonth } from './totals.js';
-import { expandSeries, extraSeriesIds, toKey } from './schedule.js';
+import { expandSeries, extraSeriesIds, seriesDayKey, doubledSessionIds, toKey } from './schedule.js';
 import { displayName, TITLES } from './profile.js';
 import { buildReminder, shouldRemind, readPrefs, writePrefs, showReminder, serverReady, subscribeToServer, unsubscribeFromServer, sessionDays, sendSessionDays } from './reminder.js';
 import { CONFIG } from '../config.js';
@@ -93,6 +93,7 @@ async function reload() {
   }
   await generateSessions();
   await removeExtraSeries();
+  await removeDoubledSessions();
   render();
   syncSessionDays();
 }
@@ -119,6 +120,18 @@ async function removeExtraSeries() {
   [state.series, state.sessions] = await Promise.all(['series', 'sessions'].map(getAll));
 }
 
+// Repairs days that got two weekly sessions when the program was changed on a session day.
+async function removeDoubledSessions() {
+  const plain = (s) => s.status === 'planned' && !s.moved && payStateOf(s) === 'none';
+  const today = toKey(new Date());
+  const current = new Set(state.series.filter((x) => !x.endDate || x.endDate >= today).map((x) => x.id));
+  const ids = doubledSessionIds(state.sessions, plain, current);
+  if (!ids.length) return;
+  for (const id of ids) await remove('sessions', id);
+  const gone = new Set(ids);
+  state.sessions = state.sessions.filter((x) => !gone.has(x.id));
+}
+
 // Writes the planned sessions of every weekly series up to HORIZON_DAYS ahead. Sessions that already exist are left alone,
 // so statuses, fees and payments recorded on them are never overwritten.
 async function generateSessions() {
@@ -128,11 +141,16 @@ async function generateSessions() {
   const evaluationDays = new Set(state.sessions
     .filter((s) => s.kind === 'evaluation')
     .map((s) => `${s.clientId}_${toKey(new Date(s.start))}`));
+  // A day that already has a weekly session keeps just that one. Changing the program on a session day, after
+  // the session was marked, used to add a second one that day at the new time.
+  const taken = new Set(state.sessions.map(seriesDayKey).filter(Boolean));
   const created = [];
   for (const series of state.series) {
     for (const occurrence of expandSeries(series, series.startDate, horizon)) {
       const day = `${occurrence.clientId}_${toKey(new Date(occurrence.start))}`;
-      if (!known.has(occurrence.id) && !evaluationDays.has(day)) created.push(occurrence);
+      if (known.has(occurrence.id) || evaluationDays.has(day) || taken.has(day)) continue;
+      taken.add(day);
+      created.push(occurrence);
     }
   }
   for (const session of created) await put('sessions', session);

@@ -49,3 +49,35 @@ export function extraSeriesIds(series, todayKey) {
   const keep = new Set(lastByDay.values());
   return series.filter((s) => !(s.endDate && s.endDate < todayKey) && !keep.has(s.id)).map((s) => s.id);
 }
+
+// The client and the day a weekly session belongs to. Its id ends with the day it was made for, so a moved
+// session still counts for that day. Sessions not made by a series give ''.
+export function seriesDayKey(session) {
+  const day = /_(\d{4}-\d{2}-\d{2})$/.exec(session.id ?? '')?.[1];
+  return session.seriesId && day ? `${session.clientId}_${day}` : '';
+}
+
+// A client has one weekly session per day. When the program changed on a session day, the new program added a
+// second one that day. Of such doubles, the recorded ones (status, payment, move) stay; when none is recorded,
+// the copy of the current program stays. Returns the ids of the copies to remove.
+export function doubledSessionIds(sessions, isPlain, currentSeriesIds) {
+  const byDay = new Map();
+  for (const s of sessions) {
+    const key = seriesDayKey(s);
+    if (!key) continue;
+    byDay.set(key, [...(byDay.get(key) ?? []), s]);
+  }
+  const out = [];
+  for (const group of byDay.values()) {
+    if (group.length < 2) continue;
+    const kept = group.filter((s) => !isPlain(s));
+    const plainOnes = group.filter(isPlain);
+    if (!kept.length) {
+      const keep = plainOnes.find((s) => currentSeriesIds.has(s.seriesId)) ?? plainOnes[plainOnes.length - 1];
+      out.push(...plainOnes.filter((s) => s !== keep).map((s) => s.id));
+    } else {
+      out.push(...plainOnes.map((s) => s.id));
+    }
+  }
+  return out;
+}
